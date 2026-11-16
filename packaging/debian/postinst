@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+  getent group fractalsql >/dev/null || addgroup --system fractalsql >/dev/null
+  getent passwd fractalsql >/dev/null || adduser --system --ingroup fractalsql --home /var/lib/fractalsql --no-create-home --shell /usr/sbin/nologin fractalsql >/dev/null
+  install -d -o fractalsql -g fractalsql -m 0750 /var/lib/fractalsql
+  chown root:fractalsql /etc/fractalsql/fractalsqld.conf
+  chmod 0640 /etc/fractalsql/fractalsqld.conf
+  if [ ! -f /etc/fractalsql/hmac.key ]; then
+    umask 027
+    od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > /etc/fractalsql/hmac.key
+    chown root:fractalsql /etc/fractalsql/hmac.key
+    chmod 0640 /etc/fractalsql/hmac.key
+  fi
+  [ -d /run/systemd/system ] && systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+exit 0

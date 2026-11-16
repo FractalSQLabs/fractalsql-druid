@@ -1,0 +1,201 @@
+name: Install test (packaging)
+
+# Builds the packages the way the release does (on Rocky Linux 9), installs the .deb on Debian and
+# Ubuntu and the .rpm on Red Hat family images, runs scripts/easy_install.sh against them, and checks
+# that the installed service and the MCP server run.
+
+on:
+  push:
+    # No path filter on push: every push to main or 2.x runs the install tests.
+    branches: [main, '2.x']
+  pull_request:
+    branches: [main, '2.x']
+    paths:
+      - 'packaging/**'
+      - 'scripts/package.sh'
+      - 'scripts/install.sh'
+      - 'scripts/easy_install.sh'
+      - 'scripts/ci/**'
+      - '.github/workflows/install-test.yml'
+  schedule:
+    - cron: '45 5 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Built on Rocky Linux 9 (glibc 2.34), as the release is, so what is tested here is what ships.
+  build-package:
+    name: build the packages
+    runs-on: ubuntu-24.04
+    container: rockylinux:9
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Install build dependencies
+        run: |
+          scripts/ci/install-build-deps-el9.sh
+          echo "JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" >> "$GITHUB_ENV"
+      - name: Build
+        run: ./build_test.sh --no-docker --gate 01,02,11,12,13
+      - name: Package
+        run: scripts/package.sh
+      - name: Upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: packages
+          path: dist/packages/*
+          if-no-files-found: error
+
+  debian-install:
+    name: install the .deb on ${{ matrix.image }}
+    needs: build-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:22.04', 'ubuntu:24.04', 'debian:12', 'debian:13']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Download
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: packages
+          path: dist/packages
+      - name: Install and check
+        run: |
+          docker run --rm -v "${{ github.workspace }}/dist/packages:/pkg:ro" -v "${{ github.workspace }}/scripts/ci:/ci:ro" ${{ matrix.image }} bash -euxc '
+            apt-get update -qq
+            apt-get install -y -qq openjdk-21-jre-headless libcurl4 libssl3 python3 >/dev/null
+            apt-get install -y -qq /pkg/fractalsql-druid-amd64.deb
+            /ci/check-installed.sh
+            # removing the package stops nothing it did not start, and leaves the signing key
+            apt-get remove -y -qq fractalsql-druid
+            test -f /etc/fractalsql/hmac.key
+          '
+
+  rpm-install:
+    name: install the .rpm on ${{ matrix.image }}
+    needs: build-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['rockylinux:9', 'almalinux:9']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Download
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: packages
+          path: dist/packages
+      - name: Install and check
+        run: |
+          docker run --rm -v "${{ github.workspace }}/dist/packages:/pkg:ro" -v "${{ github.workspace }}/scripts/ci:/ci:ro" ${{ matrix.image }} bash -euxc '
+            dnf install -y -q java-21-openjdk-headless
+            dnf install -y -q /pkg/fractalsql-druid-amd64.rpm
+            /ci/check-installed.sh
+            dnf remove -y -q fractalsql-druid
+            test -f /etc/fractalsql/hmac.key
+          '
+
+  # scripts/easy_install.sh as a user runs it: from a file here (the release serves the same file by URL),
+  # with a Druid directory to put the extension in. The package path on Debian, and the tarball path,
+  # which is what a system with neither apt nor dnf gets.
+  easy-install:
+    name: easy_install.sh (${{ matrix.mode }})
+    needs: build-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mode: deb,     image: 'ubuntu:24.04', file: 'fractalsql-druid-amd64.deb' }
+          - { mode: rpm,     image: 'rockylinux:9', file: 'fractalsql-druid-amd64.rpm' }
+          - { mode: tarball, image: 'ubuntu:24.04', file: 'fractalsql-druid-linux-amd64.tar.gz' }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Download
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: packages
+          path: dist/packages
+      - name: Run it
+        run: |
+          docker run --rm -v "${{ github.workspace }}/dist/packages:/pkg:ro" -v "${{ github.workspace }}/scripts:/scripts:ro" ${{ matrix.image }} bash -euxc '
+            if command -v apt-get >/dev/null; then
+              apt-get update -qq; apt-get install -y -qq openjdk-21-jre-headless libcurl4 libssl3 python3 >/dev/null
+            else
+              dnf install -y -q java-21-openjdk-headless
+            fi
+            mkdir -p /opt/druid/extensions
+            /scripts/easy_install.sh --dry-run --yes --from-file /pkg/${{ matrix.file }} --druid-home /opt/druid
+            /scripts/easy_install.sh --yes --from-file /pkg/${{ matrix.file }} --druid-home /opt/druid
+            test -f /opt/druid/extensions/fractalsql-druid/fractalsql-druid.jar
+            if [ "${{ matrix.mode }}" = tarball ]; then
+              BIN=/usr/local/bin
+              test -f /usr/local/etc/fractalsql/fractalsqld.conf && test -f /usr/local/etc/fractalsql/hmac.key
+            else
+              BIN=/usr/bin
+              /scripts/ci/check-installed.sh
+            fi
+            test -f $BIN/.mcp-schema-lock
+            out="$(echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ci\",\"version\":\"0\"}}}" | DRUID_URL=http://127.0.0.1:1 $BIN/fractalsql-druid-mcp 2>&1 || true)"
+            echo "$out" | grep -q schema_lock_ok
+            # uninstalling removes the programs and leaves the configuration and the key
+            /scripts/easy_install.sh --uninstall --yes --druid-home /opt/druid
+            test ! -e /opt/druid/extensions/fractalsql-druid
+            if command -v fractalsql-druid-mcp; then echo "still installed after --uninstall"; exit 1; fi
+          '
+
+  # macOS: the zip, unpacked and installed by the same script. Provider-free; the cluster gates need Docker and stay on Linux.
+  macos-install:
+    name: easy_install.sh (macOS ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: arm64, runner: macos-14,       java_home: JAVA_HOME_21_arm64 }
+          - { arch: amd64, runner: macos-15-intel, java_home: JAVA_HOME_21_X64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Install build dependencies
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          mvn -v >/dev/null 2>&1 || brew install maven
+          JH="${{ matrix.java_home }}"; J="${!JH:-}"
+          [ -n "$J" ] || J="$(/usr/libexec/java_home -v 21)"
+          echo "JAVA_HOME=$J" >> "$GITHUB_ENV"
+      - name: Build
+        run: ./build_test.sh --no-docker --gate 01,02,11,12,13
+      - name: Package
+        run: scripts/package.sh
+      - name: Install with easy_install.sh and check
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/druid/extensions
+          sudo scripts/easy_install.sh --yes --from-file dist/packages/fractalsql-druid-macos-${{ matrix.arch }}.zip --druid-home /tmp/druid
+          test -f /tmp/druid/extensions/fractalsql-druid/fractalsql-druid.jar
+          test -x /usr/local/bin/fractalsqld && test -x /usr/local/bin/fsqlctl
+          test -f /usr/local/bin/.mcp-schema-lock
+          /usr/local/bin/fractalsql-druid-mcp --version
+          test "$(/usr/local/bin/fractalsql-druid-mcp --list-tools | wc -l | tr -d ' ')" -eq 78
+          out="$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | DRUID_URL=http://127.0.0.1:1 /usr/local/bin/fractalsql-druid-mcp 2>&1 || true)"
+          echo "$out" | grep -q schema_lock_ok
+          sudo scripts/easy_install.sh --uninstall --yes --druid-home /tmp/druid
+          test ! -e /usr/local/bin/fractalsql-druid-mcp

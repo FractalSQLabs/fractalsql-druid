@@ -1,0 +1,333 @@
+name: Release fractalsql-druid
+
+# On a version tag: build the release bundle (the extension, fractalsqld, the MCP server) for each
+# platform, run the gates against it, publish the tarballs and the Debian packages as a GitHub
+# release, and push the fractalsqld container image.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (default: the version in druid-extension/pom.xml)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The extension JAR carries one native payload per platform. Each is built and tested on its own platform; the Linux bundles below
+  # download all four so the JAR they ship loads on any of them.
+  payload:
+    name: payload (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    # The Linux payloads are built on Rocky Linux 9 (glibc 2.34) so they load on older distributions too; macOS has no container.
+    container: ${{ matrix.container }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x86_64,  runner: ubuntu-24.04,     container: 'rockylinux:9', java_home: JAVA_HOME_21_X64 }
+          - { platform: linux-aarch64, runner: ubuntu-24.04-arm, container: 'rockylinux:9', java_home: JAVA_HOME_21_ARM64 }
+          - { platform: darwin-x86_64, runner: macos-15-intel,   container: '',             java_home: JAVA_HOME_21_X64 }
+          - { platform: darwin-arm64,  runner: macos-14,         container: '',             java_home: JAVA_HOME_21_arm64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Check the tag and every version string agree
+        shell: bash
+        run: |
+          want="$(sed -n 's#.*<version>\(.*\)</version>.*#\1#p' druid-extension/pom.xml | head -1)"
+          bad=0
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "${GITHUB_REF_NAME#v}" != "$want" ]; then
+            echo "tag $GITHUB_REF_NAME does not match druid-extension/pom.xml ($want)"; bad=1
+          fi
+          chk() { grep -q "\"$want\"" "$1" || { echo "$1 does not carry $want"; bad=1; }; }
+          chk mcp/src/db.h
+          chk mcp/manifest.json
+          chk service/daemon/fractalsqld.c
+          chk service/adapter/src/fractalsql.c
+          chk service/jvm/src/main/java/com/fractalsqlabs/fractalsql/daemon/Dispatcher.java
+          exit $bad
+
+      - name: Install build dependencies (Rocky 9)
+        if: matrix.container != ''
+        run: |
+          scripts/ci/install-build-deps-el9.sh
+          echo "JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" >> "$GITHUB_ENV"
+
+      - name: Install build dependencies (macOS)
+        if: matrix.container == ''
+        run: |
+          mvn -v || brew install maven
+          JH="${{ matrix.java_home }}"; J="${!JH:-}"
+          if [ -z "$J" ] && [ -x /usr/libexec/java_home ]; then J="$(/usr/libexec/java_home -v 21)"; fi
+          echo "JAVA_HOME=$J" >> "$GITHUB_ENV"
+
+      - name: Build and test the payload
+        run: ./build_test.sh --no-docker --gate 11
+
+      - name: Upload the payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: payload-${{ matrix.platform }}
+          path: druid-extension/src/main/native-resources/native/${{ matrix.platform }}
+          if-no-files-found: error
+
+  bundle:
+    name: bundle (${{ matrix.arch }})
+    needs: payload
+    runs-on: ${{ matrix.runner }}
+    # Built on Rocky Linux 9 (glibc 2.34): the daemon and the MCP server need nothing newer, so the tarball, the .deb and the .rpm
+    # install on Ubuntu 22.04, Debian 12, RHEL 9 and everything after them. A build on a current Ubuntu runner needs glibc 2.38.
+    container: rockylinux:9
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04,     java_home: JAVA_HOME_21_X64 }
+          - { arch: arm64, runner: ubuntu-24.04-arm, java_home: JAVA_HOME_21_ARM64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Install build dependencies
+        run: |
+          scripts/ci/install-build-deps-el9.sh
+          echo "JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" >> "$GITHUB_ENV"
+
+      - name: Download every platform's native payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          pattern: payload-*
+          path: druid-extension/src/main/native-resources/native-download
+
+      - name: Place the payloads
+        run: |
+          set -euo pipefail
+          native=druid-extension/src/main/native-resources/native
+          for d in druid-extension/src/main/native-resources/native-download/payload-*; do
+            plat="${d##*/payload-}"
+            mkdir -p "$native/$plat"
+            cp -a "$d"/. "$native/$plat/"
+          done
+          rm -rf druid-extension/src/main/native-resources/native-download
+          ls -R "$native"
+
+      - name: Build and test (no Docker)
+        env:
+          FSQL_ALL_PAYLOADS: '1'
+        run: ./build_test.sh --no-docker --gate 01,02,03,04,05,06,07,08,09,10,11,12,13,14,15
+
+      - name: Package
+        run: scripts/package.sh --arch ${{ matrix.arch }}
+
+      - name: Smoke test the bundle
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          ls dist/packages
+          test -f dist/packages/fractalsql-druid-${{ matrix.arch }}.deb
+          test -f dist/packages/fractalsql-druid-${{ matrix.arch }}.rpm
+          tar -C "$tmp" -xzf dist/packages/fractalsql-druid-linux-${{ matrix.arch }}.tar.gz
+          b="$(echo "$tmp"/fractalsql-druid-*)"
+          test -f "$b/extensions/fractalsql-druid/fractalsql-druid.jar"
+          "$b/bin/fractalsql-druid-mcp" --version
+          test "$("$b/bin/fractalsql-druid-mcp" --list-tools | wc -l)" -eq 78
+          # the server starts (it refuses to without its lock files, which sit beside the executable)
+          test -f "$b/bin/.mcp-schema-lock" && test -f "$b/bin/.mcp-safety-annotations-lock"
+          # how to start the server ships with it
+          test -f "$b/mcp/RUN.txt" && test -f "$b/mcp/README.md"
+          out="$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            | DRUID_URL=http://127.0.0.1:1 "$b/bin/fractalsql-druid-mcp" 2>&1 || true)"
+          echo "$out" | grep -q schema_lock_ok
+          "$b/bin/fsqlctl" 2>&1 | head -1
+          test -f "$b/fractalsqld/fractalsqld.jar" && test -f "$b/fractalsqld/libfsqld_jni.so"
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: bundle-${{ matrix.arch }}
+          path: dist/packages/*
+          if-no-files-found: error
+
+  # The macOS bundle: the extension JAR (all four payloads), the daemon, its CLI and the MCP server. The cluster gates need Docker and
+  # stay on Linux; here the daemon, the extension and the MCP server are built and the bundle is packaged.
+  bundle-macos:
+    name: bundle (macOS ${{ matrix.arch }})
+    needs: payload
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: arm64, runner: macos-14,       java_home: JAVA_HOME_21_arm64 }
+          - { arch: amd64, runner: macos-15-intel, java_home: JAVA_HOME_21_X64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Install build dependencies
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          mvn -v >/dev/null 2>&1 || brew install maven
+          JH="${{ matrix.java_home }}"; J="${!JH:-}"
+          [ -n "$J" ] || J="$(/usr/libexec/java_home -v 21)"
+          echo "JAVA_HOME=$J" >> "$GITHUB_ENV"
+
+      - name: Download every platform's native payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          pattern: payload-*
+          path: druid-extension/src/main/native-resources/native-download
+
+      - name: Place the payloads
+        run: |
+          set -euo pipefail
+          native=druid-extension/src/main/native-resources/native
+          for d in druid-extension/src/main/native-resources/native-download/payload-*; do
+            plat="${d##*/payload-}"
+            mkdir -p "$native/$plat"
+            cp -a "$d"/. "$native/$plat/"
+          done
+          rm -rf druid-extension/src/main/native-resources/native-download
+
+      - name: Build the daemon, the extension and the MCP server
+        env:
+          FSQL_ALL_PAYLOADS: '1'
+        run: ./build_test.sh --no-docker --gate 01,02,11,12,13,15
+
+      - name: Package
+        run: scripts/package.sh --arch ${{ matrix.arch }}
+
+      - name: Smoke test the bundle
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          unzip -q dist/packages/fractalsql-druid-macos-${{ matrix.arch }}.zip -d "$tmp"
+          b="$(echo "$tmp"/fractalsql-druid-*)"
+          test -f "$b/extensions/fractalsql-druid/fractalsql-druid.jar"
+          "$b/bin/fractalsql-druid-mcp" --version
+          test "$("$b/bin/fractalsql-druid-mcp" --list-tools | wc -l | tr -d ' ')" -eq 78
+          test -f "$b/bin/.mcp-schema-lock" && test -f "$b/bin/.mcp-safety-annotations-lock"
+          # how to start the server ships with it
+          test -f "$b/mcp/RUN.txt" && test -f "$b/mcp/README.md"
+          out="$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            | DRUID_URL=http://127.0.0.1:1 "$b/bin/fractalsql-druid-mcp" 2>&1 || true)"
+          echo "$out" | grep -q schema_lock_ok
+          test -f "$b/fractalsqld/fractalsqld.jar" && test -f "$b/fractalsqld/libfsqld_jni.so"
+          "$b/install.sh" --dry-run --no-daemon --druid-home "$(mktemp -d)" >/dev/null 2>&1 || true
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: bundle-macos-${{ matrix.arch }}
+          path: dist/packages/*
+          if-no-files-found: error
+
+  stack:
+    name: stack gates (Docker)
+    needs: bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev python3 maven unzip
+          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+      - name: Build
+        run: ./build_test.sh --no-docker --gate 01,02,11,12
+      - name: Stack gates
+        run: ./build_test.sh --gate 20,21,22,23,24,25,28
+
+  publish:
+    name: publish
+    needs: [bundle, bundle-macos, stack]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Download bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          pattern: bundle-*
+          path: dist/packages
+          merge-multiple: true
+
+      - name: Stage easy_install.sh (version stamped) and SHA256SUMS
+        run: |
+          set -euo pipefail
+          VER="$(sed -n 's#.*<version>\(.*\)</version>.*#\1#p' druid-extension/pom.xml | head -1)"
+          sed "0,/@@FSQL_VERSION@@/s//${VER}/" scripts/easy_install.sh > dist/packages/easy_install.sh
+          chmod +x dist/packages/easy_install.sh
+          bash -n dist/packages/easy_install.sh
+          # scripts/easy_install.sh refuses to install a download whose checksum is not in this file
+          ( cd dist/packages && rm -f SHA256SUMS && sha256sum -- * | sort -k2 > SHA256SUMS && cat SHA256SUMS )
+
+      - name: Stage the extension jar
+        run: |
+          set -euo pipefail
+          # The jar inside the Linux bundle carries all four native payloads (the bundle job placed them before building it).
+          tmp="$(mktemp -d)"
+          tar -C "$tmp" -xzf dist/packages/fractalsql-druid-linux-amd64.tar.gz
+          jar="$(find "$tmp" -path '*extensions/fractalsql-druid/fractalsql-druid.jar' | head -1)"
+          test -n "$jar"
+          for p in linux-x86_64 linux-aarch64 darwin-x86_64 darwin-arm64; do
+            unzip -l "$jar" | grep -q "native/$p/" || { echo "the jar has no $p payload"; exit 1; }
+          done
+          mkdir -p dist/maven
+          cp "$jar" dist/maven/fractalsql-druid.jar
+          # also a release asset, with a name that does not change from release to release
+          cp "$jar" dist/packages/fractalsql-druid-extension.jar
+          ( cd dist/packages && rm -f SHA256SUMS && sha256sum -- * | sort -k2 > SHA256SUMS )
+
+      - name: Create the release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
+        with:
+          files: dist/packages/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Publish the extension jar to GitHub Packages (Maven)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/settings.xml" <<XML
+          <settings><servers><server><id>github</id><username>${{ github.actor }}</username><password>${GH_TOKEN}</password></server></servers></settings>
+          XML
+          repo="$(echo "${{ github.repository }}" | tr 'A-Z' 'a-z')"
+          mvn -B -s "$RUNNER_TEMP/settings.xml" deploy:deploy-file \
+            -Dfile=dist/maven/fractalsql-druid.jar -DpomFile=druid-extension/pom.xml \
+            -DrepositoryId=github -Durl="https://maven.pkg.github.com/${repo}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Build and push the fractalsqld image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = tag ] || tag="dev"
+          image="ghcr.io/$(echo "${{ github.repository_owner }}" | tr 'A-Z' 'a-z')/fractalsqld"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build -f docker/fractalsqld/Dockerfile -t "$image:$tag" -t "$image:latest" .
+          docker push "$image:$tag"
+          docker push "$image:latest"

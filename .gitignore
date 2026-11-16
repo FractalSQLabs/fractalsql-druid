@@ -1,0 +1,112 @@
+*.so
+*.dylib
+*.o
+*.a
+fractalsql.so
+fractalsql.dylib
+
+/tsan_ledger_runner
+__pycache__/
+test/__pycache__/
+.pytest_cache/
+.coverage
+
+# build_test.sh --coverage artifacts
+*.gcno
+*.gcda
+*.gcov
+coverage_html/
+coverage_html_mcp/
+
+!include/**/*.a
+!include/**/*.so
+!include/**/*.dylib
+
+dist/
+
+# Maven build output for the Druid extension module
+druid-extension/target/
+
+# mcp build output (the POSIX Makefile links in place on Linux and macOS)
+mcp/fractalsql-druid-mcp
+
+# the daemon, the JVM sidecar and the CLI (make -C service)
+service/build/
+
+# gate test logs
+/gate*.log
+
+# make/gcc auto-generated dependency files (mcp build)
+mcp/*.d
+mcp/src/*.d
+mcp/src/adapters/*.d
+
+# The licensed enterprise library and its signature: dropped into include/<platform>/ by the person who has them, never committed
+include/*/libfractalsql-enterprise-*
+
+# stale-looking run artifacts
+crash-*
+timeout-*
+oom-*
+leak-*
+slow-unit-*
+
+bench/*.db
+
+/*_teardown.sql
+/*_generated.sql
+/bi_trend.sql
+/spike_candidate.sql
+
+
+*.deb
+*.rpm
+*.zip
+packaging/debian/.debhelper/
+packaging/debian/fractalsql-druid/
+packaging/debian/files
+packaging/debian/*.log
+packaging/debian/*.substvars
+packaging/rpm/BUILD/
+packaging/rpm/BUILDROOT/
+packaging/rpm/RPMS/
+packaging/rpm/SOURCES/
+packaging/rpm/SPECS/
+packaging/rpm/SRPMS/
+
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# MCP build-mode stamp (build_test.sh: which sanitizer/coverage mode the binary carries)
+mcp/.mcp-build-mode
+
+# build_test.sh scratch files
+fractalsql_bt_*
+
+# libFuzzer-generated corpus entries (40-hex-char names); the hand-named seeds stay tracked
+tests/fuzz/corpus_mcp_*/????????????????????????????????????????
+tests/fuzz/corpus_extract_population/????????????????????????????????????????
+
+# fuzz input trace written by the MCP fuzz gate
+fuzz_mcp_*.trace.txt
+fuzz_mcp_*.selftest.txt
+
+# Built JNI payloads staged for packaging into the extension JAR. These
+# are build output, not source: they are rebuilt by build_test.sh (gate 11) and by
+# the Docker build.
+druid-extension/src/main/native-resources/
+
+# The extension JAR staged into the Docker build context by build_test.sh
+# (gate 05), so the image bakes in the freshly built extension.
+docker/druid/extensions/
+
+# Maven/native build output anywhere in the tree (a stale one was staged under druid-extension/src/main/)
+target/
+
+# internal working notes, never published
+notes/
+*.mmd

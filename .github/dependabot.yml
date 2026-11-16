@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: MIT AND BSD-2-Clause
+# SPDX-FileCopyrightText: 2026 FractalSQLabs
+#
+# Weekly dependency updates.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # init/autobuild/analyze are pinned to the same SHA in codeql.yml; bumping one alone desyncs
+      # them and CodeQL refuses to run. Grouping keeps every codeql-action reference moving together.
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
+
+  # The Druid extension's Maven dependencies.
+  - package-ecosystem: maven
+    directory: "/druid-extension"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # The container images the demo stack and fractalsqld build from.
+  - package-ecosystem: docker
+    directory: "/docker/fractalsqld"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: docker
+    directory: "/docker/druid"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # bench/requirements.txt: the benchmark tooling's Python deps.
+  - package-ecosystem: pip
+    directory: "/bench"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

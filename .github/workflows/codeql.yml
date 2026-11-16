@@ -1,0 +1,61 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main, '2.x']
+  pull_request:
+    branches: [main, '2.x']
+  schedule:
+    - cron: '37 3 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [java-kotlin, c-cpp, python, actions]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ (matrix.language == 'java-kotlin' || matrix.language == 'c-cpp') && 'manual' || 'none' }}
+
+      - name: Install build dependencies
+        if: matrix.language == 'java-kotlin' || matrix.language == 'c-cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev python3 maven
+          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+
+      - name: "Build the extension (Java)"
+        if: matrix.language == 'java-kotlin'
+        run: |
+          make -C service jvm-jar
+          cd druid-extension && mvn -q -B package -DskipTests
+
+      - name: "Build the daemon, its JNI library and the MCP server (C and C++)"
+        if: matrix.language == 'c-cpp'
+        run: |
+          make -C service all jvm-native
+          make -C mcp
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4
+        with:
+          category: "/language:${{ matrix.language }}"

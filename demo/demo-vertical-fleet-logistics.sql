@@ -1,0 +1,636 @@
+-- demo/demo-vertical-fleet-logistics.sql
+--
+-- FractalSQL for Apache Druid -- industry vertical: autonomous fleet
+-- management and last-mile delivery. A forty-vehicle delivery fleet
+-- with route-embedding vectors, one vehicle running a deliberately
+-- detouring route. Diverse depot-coverage clustering, a
+-- cohort-restricted search (today's route-3 vehicles only),
+-- current-vs-baseline detour detection, and GPS-trace complexity via
+-- box-counting.
+--
+--   1. The fleet: baseline vs. current route vectors.
+--   2. Diverse route/zone clustering (depot coverage planning).
+--   3. The cohort-restricted search: today's route-3 vehicles only.
+--   4. fractal_search_trajectory: vehicle 5's detour against the fleet.
+--   5. fractal_dimension_boxcount: the GPS trace's complexity.
+--   6. fractal_agent_detour_classify: the same reading, as one document.
+--
+-- Prerequisites: the extension is loaded on the Druid cluster. The
+-- agent's rationale and the closing narrative need a reasoning provider
+-- (docs/reasoning-setup.md); every other step runs with no model.
+--
+-- Run:
+--   python3 demo/run_demo.py --file demo/demo-vertical-fleet-logistics.sql
+--
+-- ===========================================================================
+-- Notes on how this runs on Druid
+-- ===========================================================================
+--
+--   * The fleet and the GPS traces are fixtures: Druid has no DDL, no
+--     row-source literal and no recursive CTE, and a set of rows has no
+--     SQL form there. Random values are the deterministic sin-hash the other kits use, so the kit is reproducible.
+--   * The route-3 cohort is a computed datasource the search reads
+--     from, rather than a temporary table: Druid has no temporary
+--     tables.
+--   * The searches and the composition are service calls: an agent
+--     reads a table and reasons about it, and a Druid SQL function can
+--     do neither. The agent is handed the GPS trace as text, which is
+--     the shape it takes on this host.
+--   * The box count is a service operation too: as a SQL expression it
+--     would run once per row of the group, which for four hundred
+--     points is minutes of core time in the data node.
+--   * The closing narrative is a service call over the composition's
+--     own document.
+--   * The identity column is spelled the way each endpoint reads it:
+--     the telemetry endpoint takes "idColumn", the trajectory endpoint
+--     takes "id_column". Either way the search's doc_id is the
+--     vehicle's own id, so the result joins straight back to the
+--     fleet.
+--
+-- Notes:
+--   * Fully deterministic fixtures (no random()).
+--   * The route vector is [stop-sequence, zone, timing, payload]
+--     embeddings in CSV TEXT.
+--   * The trajectory search's doc_id is the vehicle row's own id, so
+--     the result joins straight back to the fleet.
+
+-- ---------------------------------------------------------------------------
+-- 0. Sanity check: extension loaded?
+-- ---------------------------------------------------------------------------
+SELECT fractal_edition(), fractal_version();
+
+-- ---------------------------------------------------------------------------
+-- 1. Forty delivery vehicles: baseline vs. current route vectors.
+--
+-- The baseline is the planned stop sequence, embedded; the current is
+-- today's actual telemetry, the same shape plus ordinary traffic and
+-- timing noise. Vehicle 5 gets a deliberate large detour.
+-- ---------------------------------------------------------------------------
+-- @fixture vfl_vehicles {"rows": [
+--   {"id": 1, "van_id": "VAN-1", "route_no": 1, "baseline": "0.8109,0.0167,0.0881,0.0775", "current": "0.7913,-0.0116,0.0695,0.0832"},
+--   {"id": 2, "van_id": "VAN-2", "route_no": 2, "baseline": "0.0167,0.0881,0.0775,0.5976", "current": "-0.0116,0.0695,0.0832,0.5768"},
+--   {"id": 3, "van_id": "VAN-3", "route_no": 3, "baseline": "0.0881,0.0775,0.5976,0.2415", "current": "0.0695,0.0832,0.5768,0.2531"},
+--   {"id": 4, "van_id": "VAN-4", "route_no": 4, "baseline": "0.0775,0.5976,0.2415,0.3881", "current": "0.0832,0.5768,0.2531,0.3691"},
+--   {"id": 5, "van_id": "VAN-5", "route_no": 1, "baseline": "0.5976,0.2415,0.3881,0.3282", "current": "-0.1024,0.8415,0.8881,-0.0718"},
+--   {"id": 6, "van_id": "VAN-6", "route_no": 2, "baseline": "0.2415,0.3881,0.3282,0.3679", "current": "0.2531,0.3691,0.3009,0.3819"},
+--   {"id": 7, "van_id": "VAN-7", "route_no": 3, "baseline": "0.3881,0.3282,0.3679,0.5074", "current": "0.3691,0.3009,0.3819,0.5033"},
+--   {"id": 8, "van_id": "VAN-8", "route_no": 4, "baseline": "0.3282,0.3679,0.5074,0.1733", "current": "0.3009,0.3819,0.5033,0.1487"},
+--   {"id": 9, "van_id": "VAN-9", "route_no": 1, "baseline": "0.3679,0.5074,0.1733,0.0289", "current": "0.3819,0.5033,0.1487,0.0155"},
+--   {"id": 10, "van_id": "VAN-10", "route_no": 2, "baseline": "0.5074,0.1733,0.0289,0.1903", "current": "0.5033,0.1487,0.0155,0.1659"},
+--   {"id": 11, "van_id": "VAN-11", "route_no": 3, "baseline": "0.1733,0.0289,0.1903,0.5949", "current": "0.1487,0.0155,0.1659,0.5875"},
+--   {"id": 12, "van_id": "VAN-12", "route_no": 4, "baseline": "0.0289,0.1903,0.5949,0.1541", "current": "0.0155,0.1659,0.5875,0.1532"},
+--   {"id": 13, "van_id": "VAN-13", "route_no": 1, "baseline": "0.1903,0.5949,0.1541,0.6928", "current": "0.1659,0.5875,0.1532,0.6843"},
+--   {"id": 14, "van_id": "VAN-14", "route_no": 2, "baseline": "0.5949,0.1541,0.6928,0.1842", "current": "0.5875,0.1532,0.6843,0.1808"},
+--   {"id": 15, "van_id": "VAN-15", "route_no": 3, "baseline": "0.1541,0.6928,0.1842,0.0442", "current": "0.1532,0.6843,0.1808,0.0699"},
+--   {"id": 16, "van_id": "VAN-16", "route_no": 4, "baseline": "0.6928,0.1842,0.0442,0.7339", "current": "0.6843,0.1808,0.0699,0.7528"},
+--   {"id": 17, "van_id": "VAN-17", "route_no": 1, "baseline": "0.1842,0.0442,0.7339,0.4315", "current": "0.1808,0.0699,0.7528,0.4100"},
+--   {"id": 18, "van_id": "VAN-18", "route_no": 2, "baseline": "0.0442,0.7339,0.4315,0.0895", "current": "0.0699,0.7528,0.4100,0.0913"},
+--   {"id": 19, "van_id": "VAN-19", "route_no": 3, "baseline": "0.7339,0.4315,0.0895,0.2774", "current": "0.7528,0.4100,0.0913,0.2916"},
+--   {"id": 20, "van_id": "VAN-20", "route_no": 4, "baseline": "0.4315,0.0895,0.2774,0.0941", "current": "0.4100,0.0913,0.2916,0.1110"},
+--   {"id": 21, "van_id": "VAN-21", "route_no": 1, "baseline": "0.0895,0.2774,0.0941,0.3764", "current": "0.0913,0.2916,0.1110,0.3915"},
+--   {"id": 22, "van_id": "VAN-22", "route_no": 2, "baseline": "0.2774,0.0941,0.3764,0.4848", "current": "0.2916,0.1110,0.3915,0.5105"},
+--   {"id": 23, "van_id": "VAN-23", "route_no": 3, "baseline": "0.0941,0.3764,0.4848,0.3580", "current": "0.1110,0.3915,0.5105,0.3368"},
+--   {"id": 24, "van_id": "VAN-24", "route_no": 4, "baseline": "0.3764,0.4848,0.3580,0.4441", "current": "0.3915,0.5105,0.3368,0.4174"},
+--   {"id": 25, "van_id": "VAN-25", "route_no": 1, "baseline": "0.4848,0.3580,0.4441,0.9280", "current": "0.5105,0.3368,0.4174,0.9274"},
+--   {"id": 26, "van_id": "VAN-26", "route_no": 2, "baseline": "0.3580,0.4441,0.9280,0.8154", "current": "0.3368,0.4174,0.9274,0.8012"},
+--   {"id": 27, "van_id": "VAN-27", "route_no": 3, "baseline": "0.4441,0.9280,0.8154,0.1415", "current": "0.4174,0.9274,0.8012,0.1675"},
+--   {"id": 28, "van_id": "VAN-28", "route_no": 4, "baseline": "0.9280,0.8154,0.1415,0.5297", "current": "0.9274,0.8012,0.1675,0.5044"},
+--   {"id": 29, "van_id": "VAN-29", "route_no": 1, "baseline": "0.8154,0.1415,0.5297,0.7374", "current": "0.8012,0.1675,0.5044,0.7173"},
+--   {"id": 30, "van_id": "VAN-30", "route_no": 2, "baseline": "0.1415,0.5297,0.7374,0.7809", "current": "0.1675,0.5044,0.7173,0.7808"},
+--   {"id": 31, "van_id": "VAN-31", "route_no": 3, "baseline": "0.5297,0.7374,0.7809,0.7511", "current": "0.5044,0.7173,0.7808,0.7747"},
+--   {"id": 32, "van_id": "VAN-32", "route_no": 4, "baseline": "0.7374,0.7809,0.7511,0.9279", "current": "0.7173,0.7808,0.7747,0.9185"},
+--   {"id": 33, "van_id": "VAN-33", "route_no": 1, "baseline": "0.7809,0.7511,0.9279,0.1462", "current": "0.7808,0.7747,0.9185,0.1505"},
+--   {"id": 34, "van_id": "VAN-34", "route_no": 2, "baseline": "0.7511,0.9279,0.1462,0.0558", "current": "0.7747,0.9185,0.1505,0.0688"},
+--   {"id": 35, "van_id": "VAN-35", "route_no": 3, "baseline": "0.9279,0.1462,0.0558,0.4899", "current": "0.9185,0.1505,0.0688,0.5166"},
+--   {"id": 36, "van_id": "VAN-36", "route_no": 4, "baseline": "0.1462,0.0558,0.4899,0.2641", "current": "0.1505,0.0688,0.5166,0.2466"},
+--   {"id": 37, "van_id": "VAN-37", "route_no": 1, "baseline": "0.0558,0.4899,0.2641,0.9330", "current": "0.0688,0.5166,0.2466,0.9415"},
+--   {"id": 38, "van_id": "VAN-38", "route_no": 2, "baseline": "0.4899,0.2641,0.9330,0.0789", "current": "0.5166,0.2466,0.9415,0.0517"},
+--   {"id": 39, "van_id": "VAN-39", "route_no": 3, "baseline": "0.2641,0.9330,0.0789,0.1655", "current": "0.2466,0.9415,0.0517,0.1374"},
+--   {"id": 40, "van_id": "VAN-40", "route_no": 4, "baseline": "0.9330,0.0789,0.1655,0.4976", "current": "0.9415,0.0517,0.1374,0.4976"}
+-- ]};
+
+-- How far today's route is from the plan, per vehicle.
+REPLACE INTO vfl_offplan OVERWRITE ALL
+SELECT "van_id",
+       fractal_vector_l2_distance("baseline", "current") AS "off_plan"
+FROM "vfl_vehicles"
+GROUP BY "van_id", "baseline", "current"
+PARTITIONED BY ALL;
+
+SELECT "van_id", ROUND("off_plan", 3) AS "off_plan" FROM "vfl_offplan"
+GROUP BY "van_id", "off_plan" ORDER BY "van_id";
+
+-- ---------------------------------------------------------------------------
+-- 2. Diverse route/zone clustering: "what KINDS of routes are actually
+-- running today" without scanning all forty by hand.
+-- ---------------------------------------------------------------------------
+-- @call search/explore {"datasource": "vfl_vehicles", "vectorColumn": "current",
+--                      "idColumn": "id", "query": "0,0.2,0,0", "k": 6,
+--                      "params": "{\"population_size\": 6, \"iterations\": 8}"} AS vfl_scout;
+
+SELECT r."ord" AS "ord", v."van_id" AS "van_id"
+FROM "vfl_scout" r, "vfl_vehicles" v
+WHERE r."doc_id" = v."id";
+
+-- The same traffic patterns, scored by their closeness to the first
+-- vehicle's own current route.
+-- @call search/telemetry {"table": "vfl_vehicles", "column": "current", "idColumn": "id",
+--                        "query_table": "vfl_vehicles", "query_column": "current",
+--                        "k": 6} AS vfl_rec;
+
+SELECT r."doc_id" AS "item_id", v."van_id" AS "van_id", ROUND(1.0 - r."distance", 4) AS "score"
+FROM "vfl_rec" r, "vfl_vehicles" v
+WHERE r."doc_id" = v."id";
+
+-- The session's diversify monitor is off again, so the cohort search
+-- below sees the plain nearest-neighbour behaviour.
+SELECT fractal_diversify_disable() AS "diversify_disabled";
+SELECT fractal_explain_result() AS "session_state";
+
+-- ---------------------------------------------------------------------------
+-- 3. The cohort-restricted search: today's route-3 vehicles only.
+--
+-- The cohort is computed into a datasource the search reads its rows
+-- from, so the identities come back as the vehicles' own ids.
+-- ---------------------------------------------------------------------------
+REPLACE INTO vfl_route3 OVERWRITE ALL
+SELECT "id", "van_id", "route_no", "baseline", "current"
+FROM "vfl_vehicles" WHERE "route_no" = 3
+PARTITIONED BY ALL;
+
+-- @call search/telemetry {"table": "vfl_route3", "column": "current", "idColumn": "id",
+--                        "query": "0.3,-0.3,0.2,0.1", "k": 5} AS vfl_cohort;
+
+SELECT v."van_id" AS "van_id", ROUND(r."distance", 4) AS "distance"
+FROM "vfl_cohort" r, "vfl_route3" v
+WHERE r."doc_id" = v."id";
+
+-- ---------------------------------------------------------------------------
+-- 4. Vehicle 5's detour against the fleet: "what changed", not "what's
+-- closest".
+-- ---------------------------------------------------------------------------
+REPLACE INTO vfl_v5 OVERWRITE ALL
+SELECT "baseline", "current" FROM "vfl_vehicles" WHERE "id" = 5
+PARTITIONED BY ALL;
+
+-- @call search/trajectory {"table": "vfl_vehicles", "column": "current", "id_column": "id",
+--                         "baseline_table": "vfl_v5", "baseline_column": "baseline",
+--                         "current_table": "vfl_v5", "current_column": "current",
+--                         "k": 5} AS vfl_traj;
+
+SELECT r."doc_id" AS "id", v."van_id" AS "van_id", ROUND(r."distance", 4) AS "distance"
+FROM "vfl_traj" r, "vfl_vehicles" v
+WHERE r."doc_id" = v."id";
+
+-- ---------------------------------------------------------------------------
+-- 5. The GPS-trace complexity of the detoured route.
+--
+-- A smooth planned route traces a near-straight path (a dimension close
+-- to 1); a detour with backtracking and wandering pushes it higher.
+-- Both traces are 200 samples. The count is a service operation: as a
+-- SQL expression it would run once per row of the group, which for
+-- four hundred points is minutes of core time in the data node.
+-- ---------------------------------------------------------------------------
+-- @fixture vfl_trace {"rows": [
+--   {"ent": "detour", "pt": 1, "x": -0.1231, "y": -0.0668},
+--   {"ent": "detour", "pt": 2, "x": -0.1899, "y": -0.1886},
+--   {"ent": "detour", "pt": 3, "x": -0.3117, "y": -0.2257},
+--   {"ent": "detour", "pt": 4, "x": -0.3488, "y": -0.2302},
+--   {"ent": "detour", "pt": 5, "x": -0.3534, "y": -0.2728},
+--   {"ent": "detour", "pt": 6, "x": -0.396, "y": -0.2896},
+--   {"ent": "detour", "pt": 7, "x": -0.4127, "y": -0.1612},
+--   {"ent": "detour", "pt": 8, "x": -0.2843, "y": -0.0666},
+--   {"ent": "detour", "pt": 9, "x": -0.1897, "y": -0.1741},
+--   {"ent": "detour", "pt": 10, "x": -0.2973, "y": -0.1652},
+--   {"ent": "detour", "pt": 11, "x": -0.2883, "y": -0.094},
+--   {"ent": "detour", "pt": 12, "x": -0.2171, "y": -0.0097},
+--   {"ent": "detour", "pt": 13, "x": -0.1328, "y": 0.0656},
+--   {"ent": "detour", "pt": 14, "x": -0.0575, "y": 0.194},
+--   {"ent": "detour", "pt": 15, "x": 0.0709, "y": 0.0879},
+--   {"ent": "detour", "pt": 16, "x": -0.0353, "y": -0.0454},
+--   {"ent": "detour", "pt": 17, "x": -0.1685, "y": -0.0484},
+--   {"ent": "detour", "pt": 18, "x": -0.1716, "y": -0.1192},
+--   {"ent": "detour", "pt": 19, "x": -0.2423, "y": 0.0107},
+--   {"ent": "detour", "pt": 20, "x": -0.1124, "y": -0.1156},
+--   {"ent": "detour", "pt": 21, "x": -0.2387, "y": -0.2159},
+--   {"ent": "detour", "pt": 22, "x": -0.3391, "y": -0.2167},
+--   {"ent": "detour", "pt": 23, "x": -0.3398, "y": -0.0987},
+--   {"ent": "detour", "pt": 24, "x": -0.2218, "y": -0.1456},
+--   {"ent": "detour", "pt": 25, "x": -0.2687, "y": -0.1239},
+--   {"ent": "detour", "pt": 26, "x": -0.247, "y": -0.0588},
+--   {"ent": "detour", "pt": 27, "x": -0.1819, "y": 0.0747},
+--   {"ent": "detour", "pt": 28, "x": -0.0484, "y": -0.0128},
+--   {"ent": "detour", "pt": 29, "x": -0.136, "y": 0.0295},
+--   {"ent": "detour", "pt": 30, "x": -0.0936, "y": -0.1063},
+--   {"ent": "detour", "pt": 31, "x": -0.2295, "y": -0.2469},
+--   {"ent": "detour", "pt": 32, "x": -0.37, "y": -0.2471},
+--   {"ent": "detour", "pt": 33, "x": -0.3702, "y": -0.26},
+--   {"ent": "detour", "pt": 34, "x": -0.3832, "y": -0.2698},
+--   {"ent": "detour", "pt": 35, "x": -0.3929, "y": -0.1449},
+--   {"ent": "detour", "pt": 36, "x": -0.268, "y": -0.1744},
+--   {"ent": "detour", "pt": 37, "x": -0.2975, "y": -0.0258},
+--   {"ent": "detour", "pt": 38, "x": -0.149, "y": -0.0955},
+--   {"ent": "detour", "pt": 39, "x": -0.2186, "y": -0.0167},
+--   {"ent": "detour", "pt": 40, "x": -0.1398, "y": 0.1255},
+--   {"ent": "detour", "pt": 41, "x": 0.0024, "y": 0.0075},
+--   {"ent": "detour", "pt": 42, "x": -0.1156, "y": -0.1422},
+--   {"ent": "detour", "pt": 43, "x": -0.2653, "y": -0.0728},
+--   {"ent": "detour", "pt": 44, "x": -0.1959, "y": -0.1309},
+--   {"ent": "detour", "pt": 45, "x": -0.2541, "y": -0.2181},
+--   {"ent": "detour", "pt": 46, "x": -0.3413, "y": -0.0878},
+--   {"ent": "detour", "pt": 47, "x": -0.211, "y": -0.1569},
+--   {"ent": "detour", "pt": 48, "x": -0.28, "y": -0.177},
+--   {"ent": "detour", "pt": 49, "x": -0.3002, "y": -0.0827},
+--   {"ent": "detour", "pt": 50, "x": -0.2058, "y": -0.0003},
+--   {"ent": "detour", "pt": 51, "x": -0.1234, "y": -0.1448},
+--   {"ent": "detour", "pt": 52, "x": -0.2679, "y": -0.1242},
+--   {"ent": "detour", "pt": 53, "x": -0.2474, "y": -0.0295},
+--   {"ent": "detour", "pt": 54, "x": -0.1527, "y": -0.1363},
+--   {"ent": "detour", "pt": 55, "x": -0.2594, "y": -0.0439},
+--   {"ent": "detour", "pt": 56, "x": -0.1671, "y": 0.0535},
+--   {"ent": "detour", "pt": 57, "x": -0.0696, "y": -0.0377},
+--   {"ent": "detour", "pt": 58, "x": -0.1608, "y": -0.0555},
+--   {"ent": "detour", "pt": 59, "x": -0.1786, "y": 0.0268},
+--   {"ent": "detour", "pt": 60, "x": -0.0964, "y": 0.1076},
+--   {"ent": "detour", "pt": 61, "x": -0.0155, "y": 0.2174},
+--   {"ent": "detour", "pt": 62, "x": 0.0943, "y": 0.0923},
+--   {"ent": "detour", "pt": 63, "x": -0.0309, "y": 0.1591},
+--   {"ent": "detour", "pt": 64, "x": 0.0359, "y": 0.2592},
+--   {"ent": "detour", "pt": 65, "x": 0.1361, "y": 0.388},
+--   {"ent": "detour", "pt": 66, "x": 0.2649, "y": 0.4183},
+--   {"ent": "detour", "pt": 67, "x": 0.2952, "y": 0.4127},
+--   {"ent": "detour", "pt": 68, "x": 0.2896, "y": 0.5344},
+--   {"ent": "detour", "pt": 69, "x": 0.4112, "y": 0.3893},
+--   {"ent": "detour", "pt": 70, "x": 0.2662, "y": 0.2638},
+--   {"ent": "detour", "pt": 71, "x": 0.1407, "y": 0.3269},
+--   {"ent": "detour", "pt": 72, "x": 0.2037, "y": 0.3335},
+--   {"ent": "detour", "pt": 73, "x": 0.2103, "y": 0.4512},
+--   {"ent": "detour", "pt": 74, "x": 0.328, "y": 0.5859},
+--   {"ent": "detour", "pt": 75, "x": 0.4627, "y": 0.5927},
+--   {"ent": "detour", "pt": 76, "x": 0.4695, "y": 0.5183},
+--   {"ent": "detour", "pt": 77, "x": 0.3952, "y": 0.4678},
+--   {"ent": "detour", "pt": 78, "x": 0.3446, "y": 0.5903},
+--   {"ent": "detour", "pt": 79, "x": 0.4672, "y": 0.6052},
+--   {"ent": "detour", "pt": 80, "x": 0.4821, "y": 0.4784},
+--   {"ent": "detour", "pt": 81, "x": 0.3552, "y": 0.4831},
+--   {"ent": "detour", "pt": 82, "x": 0.36, "y": 0.3864},
+--   {"ent": "detour", "pt": 83, "x": 0.2632, "y": 0.3723},
+--   {"ent": "detour", "pt": 84, "x": 0.2492, "y": 0.44},
+--   {"ent": "detour", "pt": 85, "x": 0.3168, "y": 0.5139},
+--   {"ent": "detour", "pt": 86, "x": 0.3907, "y": 0.515},
+--   {"ent": "detour", "pt": 87, "x": 0.3919, "y": 0.567},
+--   {"ent": "detour", "pt": 88, "x": 0.4438, "y": 0.4235},
+--   {"ent": "detour", "pt": 89, "x": 0.3004, "y": 0.49},
+--   {"ent": "detour", "pt": 90, "x": 0.3669, "y": 0.5986},
+--   {"ent": "detour", "pt": 91, "x": 0.4755, "y": 0.6886},
+--   {"ent": "detour", "pt": 92, "x": 0.5655, "y": 0.6879},
+--   {"ent": "detour", "pt": 93, "x": 0.5648, "y": 0.7279},
+--   {"ent": "detour", "pt": 94, "x": 0.6048, "y": 0.6323},
+--   {"ent": "detour", "pt": 95, "x": 0.5092, "y": 0.5989},
+--   {"ent": "detour", "pt": 96, "x": 0.4758, "y": 0.741},
+--   {"ent": "detour", "pt": 97, "x": 0.6178, "y": 0.6943},
+--   {"ent": "detour", "pt": 98, "x": 0.5712, "y": 0.8362},
+--   {"ent": "detour", "pt": 99, "x": 0.7131, "y": 0.8258},
+--   {"ent": "detour", "pt": 100, "x": 0.7027, "y": 0.8861},
+--   {"ent": "detour", "pt": 101, "x": 0.763, "y": 0.9845},
+--   {"ent": "detour", "pt": 102, "x": 0.8614, "y": 0.8349},
+--   {"ent": "detour", "pt": 103, "x": 0.7117, "y": 0.7095},
+--   {"ent": "detour", "pt": 104, "x": 0.5864, "y": 0.8313},
+--   {"ent": "detour", "pt": 105, "x": 0.7081, "y": 0.8978},
+--   {"ent": "detour", "pt": 106, "x": 0.7747, "y": 0.8847},
+--   {"ent": "detour", "pt": 107, "x": 0.7616, "y": 0.776},
+--   {"ent": "detour", "pt": 108, "x": 0.6528, "y": 0.8092},
+--   {"ent": "detour", "pt": 109, "x": 0.686, "y": 0.7132},
+--   {"ent": "detour", "pt": 110, "x": 0.5901, "y": 0.7323},
+--   {"ent": "detour", "pt": 111, "x": 0.6091, "y": 0.6105},
+--   {"ent": "detour", "pt": 112, "x": 0.4874, "y": 0.7527},
+--   {"ent": "detour", "pt": 113, "x": 0.6296, "y": 0.791},
+--   {"ent": "detour", "pt": 114, "x": 0.6679, "y": 0.7325},
+--   {"ent": "detour", "pt": 115, "x": 0.6094, "y": 0.8205},
+--   {"ent": "detour", "pt": 116, "x": 0.6974, "y": 0.7182},
+--   {"ent": "detour", "pt": 117, "x": 0.5951, "y": 0.7085},
+--   {"ent": "detour", "pt": 118, "x": 0.5853, "y": 0.7333},
+--   {"ent": "detour", "pt": 119, "x": 0.6102, "y": 0.6354},
+--   {"ent": "detour", "pt": 120, "x": 0.5123, "y": 0.6421},
+--   {"ent": "detour", "pt": 121, "x": 0.5189, "y": 0.6034},
+--   {"ent": "detour", "pt": 122, "x": 0.4803, "y": 0.714},
+--   {"ent": "detour", "pt": 123, "x": 0.5908, "y": 0.7559},
+--   {"ent": "detour", "pt": 124, "x": 0.6328, "y": 0.6868},
+--   {"ent": "detour", "pt": 125, "x": 0.5637, "y": 0.8029},
+--   {"ent": "detour", "pt": 126, "x": 0.6797, "y": 0.9444},
+--   {"ent": "detour", "pt": 127, "x": 0.8212, "y": 0.9216},
+--   {"ent": "detour", "pt": 128, "x": 0.7985, "y": 0.8531},
+--   {"ent": "detour", "pt": 129, "x": 0.73, "y": 0.767},
+--   {"ent": "detour", "pt": 130, "x": 0.6439, "y": 0.8618},
+--   {"ent": "detour", "pt": 131, "x": 0.7386, "y": 0.951},
+--   {"ent": "detour", "pt": 132, "x": 0.8278, "y": 0.9783},
+--   {"ent": "detour", "pt": 133, "x": 0.8552, "y": 0.8965},
+--   {"ent": "detour", "pt": 134, "x": 0.7734, "y": 1.0441},
+--   {"ent": "detour", "pt": 135, "x": 0.9209, "y": 0.9284},
+--   {"ent": "detour", "pt": 136, "x": 0.8053, "y": 1.0378},
+--   {"ent": "detour", "pt": 137, "x": 0.9147, "y": 0.9965},
+--   {"ent": "detour", "pt": 138, "x": 0.8734, "y": 1.0343},
+--   {"ent": "detour", "pt": 139, "x": 0.9112, "y": 1.0308},
+--   {"ent": "detour", "pt": 140, "x": 0.9076, "y": 0.9677},
+--   {"ent": "detour", "pt": 141, "x": 0.8445, "y": 1.039},
+--   {"ent": "detour", "pt": 142, "x": 0.9158, "y": 1.0323},
+--   {"ent": "detour", "pt": 143, "x": 0.9092, "y": 1.0313},
+--   {"ent": "detour", "pt": 144, "x": 0.9081, "y": 0.9034},
+--   {"ent": "detour", "pt": 145, "x": 0.7802, "y": 0.9027},
+--   {"ent": "detour", "pt": 146, "x": 0.7795, "y": 1.0029},
+--   {"ent": "detour", "pt": 147, "x": 0.8797, "y": 0.9716},
+--   {"ent": "detour", "pt": 148, "x": 0.8485, "y": 1.0762},
+--   {"ent": "detour", "pt": 149, "x": 0.9531, "y": 1.094},
+--   {"ent": "detour", "pt": 150, "x": 0.9708, "y": 1.1635},
+--   {"ent": "detour", "pt": 151, "x": 1.0404, "y": 1.1326},
+--   {"ent": "detour", "pt": 152, "x": 1.0095, "y": 1.0854},
+--   {"ent": "detour", "pt": 153, "x": 0.9623, "y": 1.1165},
+--   {"ent": "detour", "pt": 154, "x": 0.9934, "y": 1.037},
+--   {"ent": "detour", "pt": 155, "x": 0.9138, "y": 1.0098},
+--   {"ent": "detour", "pt": 156, "x": 0.8867, "y": 1.048},
+--   {"ent": "detour", "pt": 157, "x": 0.9249, "y": 1.0176},
+--   {"ent": "detour", "pt": 158, "x": 0.8945, "y": 1.0681},
+--   {"ent": "detour", "pt": 159, "x": 0.945, "y": 1.1292},
+--   {"ent": "detour", "pt": 160, "x": 1.0061, "y": 1.1266},
+--   {"ent": "detour", "pt": 161, "x": 1.0034, "y": 1.0103},
+--   {"ent": "detour", "pt": 162, "x": 0.8872, "y": 0.9665},
+--   {"ent": "detour", "pt": 163, "x": 0.8434, "y": 0.92},
+--   {"ent": "detour", "pt": 164, "x": 0.7969, "y": 0.9936},
+--   {"ent": "detour", "pt": 165, "x": 0.8704, "y": 1.1261},
+--   {"ent": "detour", "pt": 166, "x": 1.003, "y": 1.1392},
+--   {"ent": "detour", "pt": 167, "x": 1.0161, "y": 1.1644},
+--   {"ent": "detour", "pt": 168, "x": 1.0412, "y": 1.2437},
+--   {"ent": "detour", "pt": 169, "x": 1.1206, "y": 1.1898},
+--   {"ent": "detour", "pt": 170, "x": 1.0667, "y": 1.2353},
+--   {"ent": "detour", "pt": 171, "x": 1.1122, "y": 1.0982},
+--   {"ent": "detour", "pt": 172, "x": 0.9751, "y": 1.2444},
+--   {"ent": "detour", "pt": 173, "x": 1.1212, "y": 1.3835},
+--   {"ent": "detour", "pt": 174, "x": 1.2604, "y": 1.4919},
+--   {"ent": "detour", "pt": 175, "x": 1.3688, "y": 1.4486},
+--   {"ent": "detour", "pt": 176, "x": 1.3255, "y": 1.3549},
+--   {"ent": "detour", "pt": 177, "x": 1.2318, "y": 1.3035},
+--   {"ent": "detour", "pt": 178, "x": 1.1803, "y": 1.3379},
+--   {"ent": "detour", "pt": 179, "x": 1.2148, "y": 1.1968},
+--   {"ent": "detour", "pt": 180, "x": 1.0736, "y": 1.2272},
+--   {"ent": "detour", "pt": 181, "x": 1.104, "y": 1.3692},
+--   {"ent": "detour", "pt": 182, "x": 1.2461, "y": 1.4952},
+--   {"ent": "detour", "pt": 183, "x": 1.372, "y": 1.4917},
+--   {"ent": "detour", "pt": 184, "x": 1.3686, "y": 1.3472},
+--   {"ent": "detour", "pt": 185, "x": 1.2241, "y": 1.2733},
+--   {"ent": "detour", "pt": 186, "x": 1.1502, "y": 1.3084},
+--   {"ent": "detour", "pt": 187, "x": 1.1852, "y": 1.3479},
+--   {"ent": "detour", "pt": 188, "x": 1.2248, "y": 1.3185},
+--   {"ent": "detour", "pt": 189, "x": 1.1953, "y": 1.2442},
+--   {"ent": "detour", "pt": 190, "x": 1.1211, "y": 1.255},
+--   {"ent": "detour", "pt": 191, "x": 1.1318, "y": 1.1893},
+--   {"ent": "detour", "pt": 192, "x": 1.0662, "y": 1.1932},
+--   {"ent": "detour", "pt": 193, "x": 1.07, "y": 1.1912},
+--   {"ent": "detour", "pt": 194, "x": 1.0681, "y": 1.1746},
+--   {"ent": "detour", "pt": 195, "x": 1.0515, "y": 1.2689},
+--   {"ent": "detour", "pt": 196, "x": 1.1458, "y": 1.2486},
+--   {"ent": "detour", "pt": 197, "x": 1.1255, "y": 1.1742},
+--   {"ent": "detour", "pt": 198, "x": 1.0511, "y": 1.1385},
+--   {"ent": "detour", "pt": 199, "x": 1.0153, "y": 1.0242},
+--   {"ent": "detour", "pt": 200, "x": 0.901, "y": 0.9789},
+--   {"ent": "planned", "pt": 1, "x": 0.05, "y": 0.004},
+--   {"ent": "planned", "pt": 2, "x": 0.1, "y": 0.0078},
+--   {"ent": "planned", "pt": 3, "x": 0.15, "y": 0.0113},
+--   {"ent": "planned", "pt": 4, "x": 0.2, "y": 0.0143},
+--   {"ent": "planned", "pt": 5, "x": 0.25, "y": 0.0168},
+--   {"ent": "planned", "pt": 6, "x": 0.3, "y": 0.0186},
+--   {"ent": "planned", "pt": 7, "x": 0.35, "y": 0.0197},
+--   {"ent": "planned", "pt": 8, "x": 0.4, "y": 0.02},
+--   {"ent": "planned", "pt": 9, "x": 0.45, "y": 0.0195},
+--   {"ent": "planned", "pt": 10, "x": 0.5, "y": 0.0182},
+--   {"ent": "planned", "pt": 11, "x": 0.55, "y": 0.0162},
+--   {"ent": "planned", "pt": 12, "x": 0.6, "y": 0.0135},
+--   {"ent": "planned", "pt": 13, "x": 0.65, "y": 0.0103},
+--   {"ent": "planned", "pt": 14, "x": 0.7, "y": 0.0067},
+--   {"ent": "planned", "pt": 15, "x": 0.75, "y": 0.0028},
+--   {"ent": "planned", "pt": 16, "x": 0.8, "y": -0.0012},
+--   {"ent": "planned", "pt": 17, "x": 0.85, "y": -0.0051},
+--   {"ent": "planned", "pt": 18, "x": 0.9, "y": -0.0089},
+--   {"ent": "planned", "pt": 19, "x": 0.95, "y": -0.0122},
+--   {"ent": "planned", "pt": 20, "x": 1.0, "y": -0.0151},
+--   {"ent": "planned", "pt": 21, "x": 1.05, "y": -0.0174},
+--   {"ent": "planned", "pt": 22, "x": 1.1, "y": -0.019},
+--   {"ent": "planned", "pt": 23, "x": 1.15, "y": -0.0199},
+--   {"ent": "planned", "pt": 24, "x": 1.2, "y": -0.0199},
+--   {"ent": "planned", "pt": 25, "x": 1.25, "y": -0.0192},
+--   {"ent": "planned", "pt": 26, "x": 1.3, "y": -0.0177},
+--   {"ent": "planned", "pt": 27, "x": 1.35, "y": -0.0155},
+--   {"ent": "planned", "pt": 28, "x": 1.4, "y": -0.0126},
+--   {"ent": "planned", "pt": 29, "x": 1.45, "y": -0.0093},
+--   {"ent": "planned", "pt": 30, "x": 1.5, "y": -0.0056},
+--   {"ent": "planned", "pt": 31, "x": 1.55, "y": -0.0017},
+--   {"ent": "planned", "pt": 32, "x": 1.6, "y": 0.0023},
+--   {"ent": "planned", "pt": 33, "x": 1.65, "y": 0.0062},
+--   {"ent": "planned", "pt": 34, "x": 1.7, "y": 0.0099},
+--   {"ent": "planned", "pt": 35, "x": 1.75, "y": 0.0131},
+--   {"ent": "planned", "pt": 36, "x": 1.8, "y": 0.0159},
+--   {"ent": "planned", "pt": 37, "x": 1.85, "y": 0.018},
+--   {"ent": "planned", "pt": 38, "x": 1.9, "y": 0.0194},
+--   {"ent": "planned", "pt": 39, "x": 1.95, "y": 0.02},
+--   {"ent": "planned", "pt": 40, "x": 2.0, "y": 0.0198},
+--   {"ent": "planned", "pt": 41, "x": 2.05, "y": 0.0188},
+--   {"ent": "planned", "pt": 42, "x": 2.1, "y": 0.0171},
+--   {"ent": "planned", "pt": 43, "x": 2.15, "y": 0.0147},
+--   {"ent": "planned", "pt": 44, "x": 2.2, "y": 0.0117},
+--   {"ent": "planned", "pt": 45, "x": 2.25, "y": 0.0082},
+--   {"ent": "planned", "pt": 46, "x": 2.3, "y": 0.0045},
+--   {"ent": "planned", "pt": 47, "x": 2.35, "y": 0.0005},
+--   {"ent": "planned", "pt": 48, "x": 2.4, "y": -0.0035},
+--   {"ent": "planned", "pt": 49, "x": 2.45, "y": -0.0073},
+--   {"ent": "planned", "pt": 50, "x": 2.5, "y": -0.0109},
+--   {"ent": "planned", "pt": 51, "x": 2.55, "y": -0.014},
+--   {"ent": "planned", "pt": 52, "x": 2.6, "y": -0.0166},
+--   {"ent": "planned", "pt": 53, "x": 2.65, "y": -0.0185},
+--   {"ent": "planned", "pt": 54, "x": 2.7, "y": -0.0196},
+--   {"ent": "planned", "pt": 55, "x": 2.75, "y": -0.02},
+--   {"ent": "planned", "pt": 56, "x": 2.8, "y": -0.0196},
+--   {"ent": "planned", "pt": 57, "x": 2.85, "y": -0.0184},
+--   {"ent": "planned", "pt": 58, "x": 2.9, "y": -0.0165},
+--   {"ent": "planned", "pt": 59, "x": 2.95, "y": -0.0139},
+--   {"ent": "planned", "pt": 60, "x": 3.0, "y": -0.0107},
+--   {"ent": "planned", "pt": 61, "x": 3.05, "y": -0.0072},
+--   {"ent": "planned", "pt": 62, "x": 3.1, "y": -0.0033},
+--   {"ent": "planned", "pt": 63, "x": 3.15, "y": 0.0007},
+--   {"ent": "planned", "pt": 64, "x": 3.2, "y": 0.0046},
+--   {"ent": "planned", "pt": 65, "x": 3.25, "y": 0.0084},
+--   {"ent": "planned", "pt": 66, "x": 3.3, "y": 0.0118},
+--   {"ent": "planned", "pt": 67, "x": 3.35, "y": 0.0148},
+--   {"ent": "planned", "pt": 68, "x": 3.4, "y": 0.0172},
+--   {"ent": "planned", "pt": 69, "x": 3.45, "y": 0.0189},
+--   {"ent": "planned", "pt": 70, "x": 3.5, "y": 0.0198},
+--   {"ent": "planned", "pt": 71, "x": 3.55, "y": 0.02},
+--   {"ent": "planned", "pt": 72, "x": 3.6, "y": 0.0193},
+--   {"ent": "planned", "pt": 73, "x": 3.65, "y": 0.0179},
+--   {"ent": "planned", "pt": 74, "x": 3.7, "y": 0.0158},
+--   {"ent": "planned", "pt": 75, "x": 3.75, "y": 0.013},
+--   {"ent": "planned", "pt": 76, "x": 3.8, "y": 0.0097},
+--   {"ent": "planned", "pt": 77, "x": 3.85, "y": 0.0061},
+--   {"ent": "planned", "pt": 78, "x": 3.9, "y": 0.0022},
+--   {"ent": "planned", "pt": 79, "x": 3.95, "y": -0.0018},
+--   {"ent": "planned", "pt": 80, "x": 4.0, "y": -0.0058},
+--   {"ent": "planned", "pt": 81, "x": 4.05, "y": -0.0094},
+--   {"ent": "planned", "pt": 82, "x": 4.1, "y": -0.0128},
+--   {"ent": "planned", "pt": 83, "x": 4.15, "y": -0.0156},
+--   {"ent": "planned", "pt": 84, "x": 4.2, "y": -0.0178},
+--   {"ent": "planned", "pt": 85, "x": 4.25, "y": -0.0192},
+--   {"ent": "planned", "pt": 86, "x": 4.3, "y": -0.0199},
+--   {"ent": "planned", "pt": 87, "x": 4.35, "y": -0.0199},
+--   {"ent": "planned", "pt": 88, "x": 4.4, "y": -0.019},
+--   {"ent": "planned", "pt": 89, "x": 4.45, "y": -0.0173},
+--   {"ent": "planned", "pt": 90, "x": 4.5, "y": -0.015},
+--   {"ent": "planned", "pt": 91, "x": 4.55, "y": -0.0121},
+--   {"ent": "planned", "pt": 92, "x": 4.6, "y": -0.0087},
+--   {"ent": "planned", "pt": 93, "x": 4.65, "y": -0.0049},
+--   {"ent": "planned", "pt": 94, "x": 4.7, "y": -0.001},
+--   {"ent": "planned", "pt": 95, "x": 4.75, "y": 0.003},
+--   {"ent": "planned", "pt": 96, "x": 4.8, "y": 0.0069},
+--   {"ent": "planned", "pt": 97, "x": 4.85, "y": 0.0105},
+--   {"ent": "planned", "pt": 98, "x": 4.9, "y": 0.0136},
+--   {"ent": "planned", "pt": 99, "x": 4.95, "y": 0.0163},
+--   {"ent": "planned", "pt": 100, "x": 5.0, "y": 0.0183},
+--   {"ent": "planned", "pt": 101, "x": 5.05, "y": 0.0195},
+--   {"ent": "planned", "pt": 102, "x": 5.1, "y": 0.02},
+--   {"ent": "planned", "pt": 103, "x": 5.15, "y": 0.0197},
+--   {"ent": "planned", "pt": 104, "x": 5.2, "y": 0.0186},
+--   {"ent": "planned", "pt": 105, "x": 5.25, "y": 0.0167},
+--   {"ent": "planned", "pt": 106, "x": 5.3, "y": 0.0142},
+--   {"ent": "planned", "pt": 107, "x": 5.35, "y": 0.0111},
+--   {"ent": "planned", "pt": 108, "x": 5.4, "y": 0.0076},
+--   {"ent": "planned", "pt": 109, "x": 5.45, "y": 0.0038},
+--   {"ent": "planned", "pt": 110, "x": 5.5, "y": -0.0002},
+--   {"ent": "planned", "pt": 111, "x": 5.55, "y": -0.0041},
+--   {"ent": "planned", "pt": 112, "x": 5.6, "y": -0.008},
+--   {"ent": "planned", "pt": 113, "x": 5.65, "y": -0.0114},
+--   {"ent": "planned", "pt": 114, "x": 5.7, "y": -0.0145},
+--   {"ent": "planned", "pt": 115, "x": 5.75, "y": -0.0169},
+--   {"ent": "planned", "pt": 116, "x": 5.8, "y": -0.0187},
+--   {"ent": "planned", "pt": 117, "x": 5.85, "y": -0.0197},
+--   {"ent": "planned", "pt": 118, "x": 5.9, "y": -0.02},
+--   {"ent": "planned", "pt": 119, "x": 5.95, "y": -0.0194},
+--   {"ent": "planned", "pt": 120, "x": 6.0, "y": -0.0181},
+--   {"ent": "planned", "pt": 121, "x": 6.05, "y": -0.0161},
+--   {"ent": "planned", "pt": 122, "x": 6.1, "y": -0.0134},
+--   {"ent": "planned", "pt": 123, "x": 6.15, "y": -0.0102},
+--   {"ent": "planned", "pt": 124, "x": 6.2, "y": -0.0065},
+--   {"ent": "planned", "pt": 125, "x": 6.25, "y": -0.0026},
+--   {"ent": "planned", "pt": 126, "x": 6.3, "y": 0.0013},
+--   {"ent": "planned", "pt": 127, "x": 6.35, "y": 0.0053},
+--   {"ent": "planned", "pt": 128, "x": 6.4, "y": 0.009},
+--   {"ent": "planned", "pt": 129, "x": 6.45, "y": 0.0124},
+--   {"ent": "planned", "pt": 130, "x": 6.5, "y": 0.0153},
+--   {"ent": "planned", "pt": 131, "x": 6.55, "y": 0.0175},
+--   {"ent": "planned", "pt": 132, "x": 6.6, "y": 0.0191},
+--   {"ent": "planned", "pt": 133, "x": 6.65, "y": 0.0199},
+--   {"ent": "planned", "pt": 134, "x": 6.7, "y": 0.0199},
+--   {"ent": "planned", "pt": 135, "x": 6.75, "y": 0.0191},
+--   {"ent": "planned", "pt": 136, "x": 6.8, "y": 0.0176},
+--   {"ent": "planned", "pt": 137, "x": 6.85, "y": 0.0153},
+--   {"ent": "planned", "pt": 138, "x": 6.9, "y": 0.0125},
+--   {"ent": "planned", "pt": 139, "x": 6.95, "y": 0.0091},
+--   {"ent": "planned", "pt": 140, "x": 7.0, "y": 0.0054},
+--   {"ent": "planned", "pt": 141, "x": 7.05, "y": 0.0015},
+--   {"ent": "planned", "pt": 142, "x": 7.1, "y": -0.0025},
+--   {"ent": "planned", "pt": 143, "x": 7.15, "y": -0.0064},
+--   {"ent": "planned", "pt": 144, "x": 7.2, "y": -0.01},
+--   {"ent": "planned", "pt": 145, "x": 7.25, "y": -0.0133},
+--   {"ent": "planned", "pt": 146, "x": 7.3, "y": -0.016},
+--   {"ent": "planned", "pt": 147, "x": 7.35, "y": -0.0181},
+--   {"ent": "planned", "pt": 148, "x": 7.4, "y": -0.0194},
+--   {"ent": "planned", "pt": 149, "x": 7.45, "y": -0.02},
+--   {"ent": "planned", "pt": 150, "x": 7.5, "y": -0.0198},
+--   {"ent": "planned", "pt": 151, "x": 7.55, "y": -0.0188},
+--   {"ent": "planned", "pt": 152, "x": 7.6, "y": -0.017},
+--   {"ent": "planned", "pt": 153, "x": 7.65, "y": -0.0146},
+--   {"ent": "planned", "pt": 154, "x": 7.7, "y": -0.0116},
+--   {"ent": "planned", "pt": 155, "x": 7.75, "y": -0.0081},
+--   {"ent": "planned", "pt": 156, "x": 7.8, "y": -0.0043},
+--   {"ent": "planned", "pt": 157, "x": 7.85, "y": -0.0003},
+--   {"ent": "planned", "pt": 158, "x": 7.9, "y": 0.0037},
+--   {"ent": "planned", "pt": 159, "x": 7.95, "y": 0.0075},
+--   {"ent": "planned", "pt": 160, "x": 8.0, "y": 0.011},
+--   {"ent": "planned", "pt": 161, "x": 8.05, "y": 0.0141},
+--   {"ent": "planned", "pt": 162, "x": 8.1, "y": 0.0167},
+--   {"ent": "planned", "pt": 163, "x": 8.15, "y": 0.0185},
+--   {"ent": "planned", "pt": 164, "x": 8.2, "y": 0.0197},
+--   {"ent": "planned", "pt": 165, "x": 8.25, "y": 0.02},
+--   {"ent": "planned", "pt": 166, "x": 8.3, "y": 0.0195},
+--   {"ent": "planned", "pt": 167, "x": 8.35, "y": 0.0183},
+--   {"ent": "planned", "pt": 168, "x": 8.4, "y": 0.0164},
+--   {"ent": "planned", "pt": 169, "x": 8.45, "y": 0.0137},
+--   {"ent": "planned", "pt": 170, "x": 8.5, "y": 0.0106},
+--   {"ent": "planned", "pt": 171, "x": 8.55, "y": 0.007},
+--   {"ent": "planned", "pt": 172, "x": 8.6, "y": 0.0031},
+--   {"ent": "planned", "pt": 173, "x": 8.65, "y": -0.0008},
+--   {"ent": "planned", "pt": 174, "x": 8.7, "y": -0.0048},
+--   {"ent": "planned", "pt": 175, "x": 8.75, "y": -0.0086},
+--   {"ent": "planned", "pt": 176, "x": 8.8, "y": -0.012},
+--   {"ent": "planned", "pt": 177, "x": 8.85, "y": -0.0149},
+--   {"ent": "planned", "pt": 178, "x": 8.9, "y": -0.0173},
+--   {"ent": "planned", "pt": 179, "x": 8.95, "y": -0.0189},
+--   {"ent": "planned", "pt": 180, "x": 9.0, "y": -0.0198},
+--   {"ent": "planned", "pt": 181, "x": 9.05, "y": -0.0199},
+--   {"ent": "planned", "pt": 182, "x": 9.1, "y": -0.0193},
+--   {"ent": "planned", "pt": 183, "x": 9.15, "y": -0.0178},
+--   {"ent": "planned", "pt": 184, "x": 9.2, "y": -0.0157},
+--   {"ent": "planned", "pt": 185, "x": 9.25, "y": -0.0129},
+--   {"ent": "planned", "pt": 186, "x": 9.3, "y": -0.0096},
+--   {"ent": "planned", "pt": 187, "x": 9.35, "y": -0.0059},
+--   {"ent": "planned", "pt": 188, "x": 9.4, "y": -0.002},
+--   {"ent": "planned", "pt": 189, "x": 9.45, "y": 0.002},
+--   {"ent": "planned", "pt": 190, "x": 9.5, "y": 0.0059},
+--   {"ent": "planned", "pt": 191, "x": 9.55, "y": 0.0096},
+--   {"ent": "planned", "pt": 192, "x": 9.6, "y": 0.0129},
+--   {"ent": "planned", "pt": 193, "x": 9.65, "y": 0.0157},
+--   {"ent": "planned", "pt": 194, "x": 9.7, "y": 0.0178},
+--   {"ent": "planned", "pt": 195, "x": 9.75, "y": 0.0193},
+--   {"ent": "planned", "pt": 196, "x": 9.8, "y": 0.02},
+--   {"ent": "planned", "pt": 197, "x": 9.85, "y": 0.0198},
+--   {"ent": "planned", "pt": 198, "x": 9.9, "y": 0.0189},
+--   {"ent": "planned", "pt": 199, "x": 9.95, "y": 0.0173},
+--   {"ent": "planned", "pt": 200, "x": 10.0, "y": 0.0149}
+-- ]};
+
+-- @call boxcount {"datasource": "vfl_trace", "entityColumn": "ent",
+--                 "xColumn": "x", "yColumn": "y", "dim": 2} AS vfl_dim;
+
+SELECT "entity", "dim" FROM "vfl_dim" WHERE "entity" IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- 6. fractal_agent_detour_classify: the nearest fleet vehicle, the
+-- trajectory distance, the GPS-trace complexity and a rationale.
+-- ---------------------------------------------------------------------------
+-- @call agent/detour_classify {"vehicle_table": "vfl_vehicles", "emb_col": "current",
+--                              "id_column": "id",
+--                              "baseline_vec_table": "vfl_v5", "baseline_vec_column": "baseline",
+--                              "current_vec_table": "vfl_v5", "current_vec_column": "current",
+--                              "gps_trace": "-0.1231,-0.0668,-0.1899,-0.1886,-0.3117,-0.2257,-0.3488,-0.2302,-0.3534,-0.2728,-0.3960,-0.2896,-0.4127,-0.1612,-0.2843,-0.0666,-0.1897,-0.1741,-0.2973,-0.1652,-0.2883,-0.0940,-0.2171,-0.0097,-0.1328,0.0656,-0.0575,0.1940,0.0709,0.0879,-0.0353,-0.0454,-0.1685,-0.0484,-0.1716,-0.1192,-0.2423,0.0107,-0.1124,-0.1156,-0.2387,-0.2159,-0.3391,-0.2167,-0.3398,-0.0987,-0.2218,-0.1456,-0.2687,-0.1239,-0.2470,-0.0588,-0.1819,0.0747,-0.0484,-0.0128,-0.1360,0.0295,-0.0936,-0.1063,-0.2295,-0.2469,-0.3700,-0.2471,-0.3702,-0.2600,-0.3832,-0.2698,-0.3929,-0.1449,-0.2680,-0.1744,-0.2975,-0.0258,-0.1490,-0.0955,-0.2186,-0.0167,-0.1398,0.1255,0.0024,0.0075,-0.1156,-0.1422,-0.2653,-0.0728,-0.1959,-0.1309,-0.2541,-0.2181,-0.3413,-0.0878,-0.2110,-0.1569,-0.2800,-0.1770,-0.3002,-0.0827,-0.2058,-0.0003,-0.1234,-0.1448,-0.2679,-0.1242,-0.2474,-0.0295,-0.1527,-0.1363,-0.2594,-0.0439,-0.1671,0.0535,-0.0696,-0.0377,-0.1608,-0.0555,-0.1786,0.0268,-0.0964,0.1076,-0.0155,0.2174,0.0943,0.0923,-0.0309,0.1591,0.0359,0.2592,0.1361,0.3880,0.2649,0.4183,0.2952,0.4127,0.2896,0.5344,0.4112,0.3893,0.2662,0.2638,0.1407,0.3269,0.2037,0.3335,0.2103,0.4512,0.3280,0.5859,0.4627,0.5927,0.4695,0.5183,0.3952,0.4678,0.3446,0.5903,0.4672,0.6052,0.4821,0.4784,0.3552,0.4831,0.3600,0.3864,0.2632,0.3723,0.2492,0.4400,0.3168,0.5139,0.3907,0.5150,0.3919,0.5670,0.4438,0.4235,0.3004,0.4900,0.3669,0.5986,0.4755,0.6886,0.5655,0.6879,0.5648,0.7279,0.6048,0.6323,0.5092,0.5989,0.4758,0.7410,0.6178,0.6943,0.5712,0.8362,0.7131,0.8258,0.7027,0.8861,0.7630,0.9845,0.8614,0.8349,0.7117,0.7095,0.5864,0.8313,0.7081,0.8978,0.7747,0.8847,0.7616,0.7760,0.6528,0.8092,0.6860,0.7132,0.5901,0.7323,0.6091,0.6105,0.4874,0.7527,0.6296,0.7910,0.6679,0.7325,0.6094,0.8205,0.6974,0.7182,0.5951,0.7085,0.5853,0.7333,0.6102,0.6354,0.5123,0.6421,0.5189,0.6034,0.4803,0.7140,0.5908,0.7559,0.6328,0.6868,0.5637,0.8029,0.6797,0.9444,0.8212,0.9216,0.7985,0.8531,0.7300,0.7670,0.6439,0.8618,0.7386,0.9510,0.8278,0.9783,0.8552,0.8965,0.7734,1.0441,0.9209,0.9284,0.8053,1.0378,0.9147,0.9965,0.8734,1.0343,0.9112,1.0308,0.9076,0.9677,0.8445,1.0390,0.9158,1.0323,0.9092,1.0313,0.9081,0.9034,0.7802,0.9027,0.7795,1.0029,0.8797,0.9716,0.8485,1.0762,0.9531,1.0940,0.9708,1.1635,1.0404,1.1326,1.0095,1.0854,0.9623,1.1165,0.9934,1.0370,0.9138,1.0098,0.8867,1.0480,0.9249,1.0176,0.8945,1.0681,0.9450,1.1292,1.0061,1.1266,1.0034,1.0103,0.8872,0.9665,0.8434,0.9200,0.7969,0.9936,0.8704,1.1261,1.0030,1.1392,1.0161,1.1644,1.0412,1.2437,1.1206,1.1898,1.0667,1.2353,1.1122,1.0982,0.9751,1.2444,1.1212,1.3835,1.2604,1.4919,1.3688,1.4486,1.3255,1.3549,1.2318,1.3035,1.1803,1.3379,1.2148,1.1968,1.0736,1.2272,1.1040,1.3692,1.2461,1.4952,1.3720,1.4917,1.3686,1.3472,1.2241,1.2733,1.1502,1.3084,1.1852,1.3479,1.2248,1.3185,1.1953,1.2442,1.1211,1.2550,1.1318,1.1893,1.0662,1.1932,1.0700,1.1912,1.0681,1.1746,1.0515,1.2689,1.1458,1.2486,1.1255,1.1742,1.0511,1.1385,1.0153,1.0242,0.9010,0.9789",
+--                              "boxcount_dim": 2};
+
+-- The dispatch narrative, folded into one reasoning step over the
+-- composition's own document.
+-- @call reason {"query": "one-line dispatch narrative for this detouring fleet vehicle",
+--               "context": "$previous"};
+
+-- ---------------------------------------------------------------------------
+-- 7. The kit's own headline check.
+--
+-- The demo contract: a kit prints its headline and exits
+-- non-zero unless the result holds. Vehicle 5 is the only vehicle far
+-- off its plan, the detour search returned its five nearest fleet
+-- neighbours, the cohort search stayed inside today's route-3
+-- vehicles, and the detoured trace is the more complex of the two.
+-- ---------------------------------------------------------------------------
+SELECT CASE
+           WHEN (SELECT COUNT(*) FROM "vfl_vehicles") = 40
+            AND (SELECT COUNT(*) FROM "vfl_offplan" WHERE "off_plan" > 0.5) = 1
+            AND (SELECT COUNT(*) FROM "vfl_traj") = 5
+            AND (SELECT COUNT(*) FROM "vfl_cohort") = 5
+            AND (SELECT "dim" FROM "vfl_dim" WHERE "entity" = 'detour')
+                > (SELECT "dim" FROM "vfl_dim" WHERE "entity" = 'planned')
+            THEN 'HEADLINE kit=fleet-logistics ok'
+            ELSE 'HEADLINE kit=fleet-logistics FAILED'
+       END AS "headline";

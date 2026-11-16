@@ -1,0 +1,832 @@
+-- demo/demo-vertical-smart-cities-iot.sql
+--
+-- FractalSQL for Apache Druid -- industry vertical: smart cities and
+-- IoT sensor grids. A 400-sensor city grid (traffic, air quality and
+-- noise, on a jittered 20x20 placement) for spatial coverage-complexity
+-- analysis, one sensor's reading series carrying a deliberate regime
+-- shift (an air-quality event) for DFA/drift detection, and a diverse
+-- representative-zone sample across the grid.
+--
+--   1. fractal_dimension_boxcount / fractal_morphological_complexity:
+--      the grid's spatial coverage.
+--   2. fractal_dimension_dfa / fractal_dimension_drift: the air-quality
+--      event.
+--   3. fractal_agent_network_coverage_alert: the coverage alert over
+--      the morphology and the drift.
+--   4. fractal_search_explore: a diverse sample of the grid's reading
+--      profiles.
+--   5. A closing fractal_reason() writes the city-ops narrative.
+--
+-- Prerequisites: the extension is loaded on the Druid cluster. The
+-- narrative and the agent's rationale need a reasoning provider
+-- (docs/reasoning-setup.md); every other step runs with no model.
+--
+-- Run:
+--   python3 demo/run_demo.py --file demo/demo-vertical-smart-cities-iot.sql
+--
+-- ===========================================================================
+-- Notes on how this runs on Druid
+-- ===========================================================================
+--
+--   * The 400 sensors are an @fixture directive: Druid has no DDL, no
+--     VALUES and no recursive CTE, and random values are the deterministic sin-hash the other kits use. The grid's
+--     placement is a jittered 20x20 layout.
+--   * The flat point cloud (the box-counting input) is an MSQ write
+--     with ARRAY_AGG: Druid has no group_concat, and the cloud is the
+--     800 flat coordinates of the grid in (row, col) order.
+--   * The air-quality series is a fixture whose rows are the walk, and
+--     its CSV form is built with ARRAY_AGG: Druid has no window
+--     functions, and a fixture's rows keep their order through the
+--     write and the scan, so the DFA exponent still sees the series in
+--     the right order.
+--   * The Scout search is a service call: it is a search over a whole
+--     column, which a Druid aggregate cannot do, so it is a
+--     search/explore service call.
+--   * The agent is a service call too: an agent reads a table and
+--     reasons about it, and a Druid SQL function can do neither.
+--
+-- Notes:
+--   * Fully deterministic fixtures (no random()).
+--   * Ends with a HEADLINE line computed from the kit's own results
+--     (HEADLINE kit=<name> ok); the build_test kit gate greps for it.
+
+-- ---------------------------------------------------------------------------
+-- 0. Sanity check: extension loaded?
+-- ---------------------------------------------------------------------------
+SELECT fractal_edition(), fractal_version();
+
+-- ---------------------------------------------------------------------------
+-- 1. Four hundred sensors on a jittered 20x20 city grid.
+--
+-- Each sensor carries a [x, y] position and a [traffic, air quality,
+-- noise] reading. A grid-like layout, not a sparse random scatter, is
+-- what the box-counting functions below need to find enough
+-- occupied-cell structure across the eps scales.
+-- ---------------------------------------------------------------------------
+-- @fixture vsc_sensors {"rows": [
+--   {"id": 1, "sensor_id": "SENSOR-1", "pos": "-0.1328,0.0175", "reading": "0.6424,-0.6419,0.9903"},
+--   {"id": 2, "sensor_id": "SENSOR-2", "pos": "0.0175,0.9621", "reading": "-0.6419,0.9903,0.6321"},
+--   {"id": 3, "sensor_id": "SENSOR-3", "pos": "-0.0379,1.9860", "reading": "0.9903,0.6321,-0.1164"},
+--   {"id": 4, "sensor_id": "SENSOR-4", "pos": "-0.0140,3.0378", "reading": "0.6321,-0.1164,0.8538"},
+--   {"id": 5, "sensor_id": "SENSOR-5", "pos": "0.0378,3.8997", "reading": "-0.1164,0.8538,-0.1316"},
+--   {"id": 6, "sensor_id": "SENSOR-6", "pos": "-0.1003,4.9487", "reading": "0.8538,-0.1316,0.2884"},
+--   {"id": 7, "sensor_id": "SENSOR-7", "pos": "-0.0513,6.0119", "reading": "-0.1316,0.2884,-0.3547"},
+--   {"id": 8, "sensor_id": "SENSOR-8", "pos": "0.0119,7.1415", "reading": "0.2884,-0.3547,0.5208"},
+--   {"id": 9, "sensor_id": "SENSOR-9", "pos": "0.1415,8.0964", "reading": "-0.3547,0.5208,0.1121"},
+--   {"id": 10, "sensor_id": "SENSOR-10", "pos": "0.0964,8.9037", "reading": "0.5208,0.1121,0.3218"},
+--   {"id": 11, "sensor_id": "SENSOR-11", "pos": "-0.0963,10.1486", "reading": "0.1121,0.3218,-0.1613"},
+--   {"id": 12, "sensor_id": "SENSOR-12", "pos": "0.1486,11.0948", "reading": "0.3218,-0.1613,-0.7285"},
+--   {"id": 13, "sensor_id": "SENSOR-13", "pos": "0.0948,11.9825", "reading": "-0.1613,-0.7285,-0.3391"},
+--   {"id": 14, "sensor_id": "SENSOR-14", "pos": "-0.0175,13.1281", "reading": "-0.7285,-0.3391,-0.0094"},
+--   {"id": 15, "sensor_id": "SENSOR-15", "pos": "0.1281,13.9803", "reading": "-0.3391,-0.0094,-0.9994"},
+--   {"id": 16, "sensor_id": "SENSOR-16", "pos": "-0.0197,15.0433", "reading": "-0.0094,-0.9994,-0.6762"},
+--   {"id": 17, "sensor_id": "SENSOR-17", "pos": "0.0433,15.9468", "reading": "-0.9994,-0.6762,-0.1596"},
+--   {"id": 18, "sensor_id": "SENSOR-18", "pos": "-0.0532,17.0781", "reading": "-0.6762,-0.1596,0.9702"},
+--   {"id": 19, "sensor_id": "SENSOR-19", "pos": "0.0781,18.0168", "reading": "-0.1596,0.9702,0.4468"},
+--   {"id": 20, "sensor_id": "SENSOR-20", "pos": "0.0168,19.0483", "reading": "0.9702,0.4468,-0.4286"},
+--   {"id": 21, "sensor_id": "SENSOR-21", "pos": "1.0483,-0.0242", "reading": "0.4468,-0.4286,-0.1639"},
+--   {"id": 22, "sensor_id": "SENSOR-22", "pos": "0.9758,0.8907", "reading": "-0.4286,-0.1639,-0.5988"},
+--   {"id": 23, "sensor_id": "SENSOR-23", "pos": "0.8907,1.9491", "reading": "-0.1639,-0.5988,0.1518"},
+--   {"id": 24, "sensor_id": "SENSOR-24", "pos": "0.9491,2.9986", "reading": "-0.5988,0.1518,0.9630"},
+--   {"id": 25, "sensor_id": "SENSOR-25", "pos": "0.9986,3.8501", "reading": "0.1518,0.9630,0.8411"},
+--   {"id": 26, "sensor_id": "SENSOR-26", "pos": "0.8501,4.8986", "reading": "0.9630,0.8411,-0.0594"},
+--   {"id": 27, "sensor_id": "SENSOR-27", "pos": "0.8986,5.9761", "reading": "0.8411,-0.0594,0.5364"},
+--   {"id": 28, "sensor_id": "SENSOR-28", "pos": "0.9761,7.1455", "reading": "-0.0594,0.5364,0.1933"},
+--   {"id": 29, "sensor_id": "SENSOR-29", "pos": "1.1455,8.0670", "reading": "0.5364,0.1933,0.8685"},
+--   {"id": 30, "sensor_id": "SENSOR-30", "pos": "1.0670,8.9357", "reading": "0.1933,0.8685,-0.0938"},
+--   {"id": 31, "sensor_id": "SENSOR-31", "pos": "0.9357,9.9754", "reading": "0.8685,-0.0938,-0.5691"},
+--   {"id": 32, "sensor_id": "SENSOR-32", "pos": "0.9754,10.9102", "reading": "-0.0938,-0.5691,0.3894"},
+--   {"id": 33, "sensor_id": "SENSOR-33", "pos": "0.9102,12.0228", "reading": "-0.5691,0.3894,0.5919"},
+--   {"id": 34, "sensor_id": "SENSOR-34", "pos": "1.0228,13.1445", "reading": "0.3894,0.5919,-0.4336"},
+--   {"id": 35, "sensor_id": "SENSOR-35", "pos": "1.1445,14.1262", "reading": "0.5919,-0.4336,0.0278"},
+--   {"id": 36, "sensor_id": "SENSOR-36", "pos": "1.1262,14.9911", "reading": "-0.4336,0.0278,-0.7149"},
+--   {"id": 37, "sensor_id": "SENSOR-37", "pos": "0.9911,16.0805", "reading": "0.0278,-0.7149,-0.7712"},
+--   {"id": 38, "sensor_id": "SENSOR-38", "pos": "1.0805,17.0290", "reading": "-0.7149,-0.7712,-0.3956"},
+--   {"id": 39, "sensor_id": "SENSOR-39", "pos": "1.0290,18.1303", "reading": "-0.7712,-0.3956,-0.7682"},
+--   {"id": 40, "sensor_id": "SENSOR-40", "pos": "1.1303,18.9859", "reading": "-0.3956,-0.7682,0.6240"},
+--   {"id": 41, "sensor_id": "SENSOR-41", "pos": "1.9859,-0.0854", "reading": "-0.7682,0.6240,0.1078"},
+--   {"id": 42, "sensor_id": "SENSOR-42", "pos": "1.9146,1.0584", "reading": "0.6240,0.1078,-0.1907"},
+--   {"id": 43, "sensor_id": "SENSOR-43", "pos": "2.0584,2.0888", "reading": "0.1078,-0.1907,0.7458"},
+--   {"id": 44, "sensor_id": "SENSOR-44", "pos": "2.0888,2.9350", "reading": "-0.1907,0.7458,-0.0507"},
+--   {"id": 45, "sensor_id": "SENSOR-45", "pos": "1.9350,4.0042", "reading": "0.7458,-0.0507,-0.5500"},
+--   {"id": 46, "sensor_id": "SENSOR-46", "pos": "2.0042,4.8928", "reading": "-0.0507,-0.5500,-0.3813"},
+--   {"id": 47, "sensor_id": "SENSOR-47", "pos": "1.8928,5.8843", "reading": "-0.5500,-0.3813,-0.6502"},
+--   {"id": 48, "sensor_id": "SENSOR-48", "pos": "1.8843,6.9407", "reading": "-0.3813,-0.6502,-0.6604"},
+--   {"id": 49, "sensor_id": "SENSOR-49", "pos": "1.9407,7.8848", "reading": "-0.6502,-0.6604,-0.8356"},
+--   {"id": 50, "sensor_id": "SENSOR-50", "pos": "1.8848,9.0936", "reading": "-0.6604,-0.8356,0.6218"},
+--   {"id": 51, "sensor_id": "SENSOR-51", "pos": "2.0936,10.0162", "reading": "-0.8356,0.6218,-0.9667"},
+--   {"id": 52, "sensor_id": "SENSOR-52", "pos": "2.0162,10.9714", "reading": "0.6218,-0.9667,-0.8239"},
+--   {"id": 53, "sensor_id": "SENSOR-53", "pos": "1.9714,12.1119", "reading": "-0.9667,-0.8239,-0.8449"},
+--   {"id": 54, "sensor_id": "SENSOR-54", "pos": "2.1119,12.9924", "reading": "-0.8239,-0.8449,0.1952"},
+--   {"id": 55, "sensor_id": "SENSOR-55", "pos": "1.9924,13.9175", "reading": "-0.8449,0.1952,-0.5170"},
+--   {"id": 56, "sensor_id": "SENSOR-56", "pos": "1.9175,14.9428", "reading": "0.1952,-0.5170,-0.2239"},
+--   {"id": 57, "sensor_id": "SENSOR-57", "pos": "1.9428,15.9025", "reading": "-0.5170,-0.2239,-0.3436"},
+--   {"id": 58, "sensor_id": "SENSOR-58", "pos": "1.9025,16.9009", "reading": "-0.2239,-0.3436,-0.2643"},
+--   {"id": 59, "sensor_id": "SENSOR-59", "pos": "1.9009,17.8747", "reading": "-0.3436,-0.2643,0.0147"},
+--   {"id": 60, "sensor_id": "SENSOR-60", "pos": "1.8747,19.0933", "reading": "-0.2643,0.0147,-0.6535"},
+--   {"id": 61, "sensor_id": "SENSOR-61", "pos": "3.0933,-0.1450", "reading": "0.0147,-0.6535,-0.9422"},
+--   {"id": 62, "sensor_id": "SENSOR-62", "pos": "2.8550,0.8764", "reading": "-0.6535,-0.9422,-0.6195"},
+--   {"id": 63, "sensor_id": "SENSOR-63", "pos": "2.8764,1.8733", "reading": "-0.9422,-0.6195,0.1898"},
+--   {"id": 64, "sensor_id": "SENSOR-64", "pos": "2.8733,3.0293", "reading": "-0.6195,0.1898,-0.6918"},
+--   {"id": 65, "sensor_id": "SENSOR-65", "pos": "3.0293,3.9224", "reading": "0.1898,-0.6918,0.3855"},
+--   {"id": 66, "sensor_id": "SENSOR-66", "pos": "2.9224,4.9664", "reading": "-0.6918,0.3855,-0.6317"},
+--   {"id": 67, "sensor_id": "SENSOR-67", "pos": "2.9664,5.9485", "reading": "0.3855,-0.6317,-0.9116"},
+--   {"id": 68, "sensor_id": "SENSOR-68", "pos": "2.9485,6.9604", "reading": "-0.6317,-0.9116,0.4678"},
+--   {"id": 69, "sensor_id": "SENSOR-69", "pos": "2.9604,8.0022", "reading": "-0.9116,0.4678,-0.1371"},
+--   {"id": 70, "sensor_id": "SENSOR-70", "pos": "3.0022,8.9020", "reading": "0.4678,-0.1371,-0.8209"},
+--   {"id": 71, "sensor_id": "SENSOR-71", "pos": "2.9020,9.8587", "reading": "-0.1371,-0.8209,-0.4452"},
+--   {"id": 72, "sensor_id": "SENSOR-72", "pos": "2.8587,10.9071", "reading": "-0.8209,-0.4452,-0.8119"},
+--   {"id": 73, "sensor_id": "SENSOR-73", "pos": "2.9071,12.0285", "reading": "-0.4452,-0.8119,-0.2473"},
+--   {"id": 74, "sensor_id": "SENSOR-74", "pos": "3.0285,12.8962", "reading": "-0.8119,-0.2473,-0.0304"},
+--   {"id": 75, "sensor_id": "SENSOR-75", "pos": "2.8962,14.0578", "reading": "-0.2473,-0.0304,-0.2841"},
+--   {"id": 76, "sensor_id": "SENSOR-76", "pos": "3.0578,14.9052", "reading": "-0.0304,-0.2841,-0.1117"},
+--   {"id": 77, "sensor_id": "SENSOR-77", "pos": "2.9052,15.8633", "reading": "-0.2841,-0.1117,0.8561"},
+--   {"id": 78, "sensor_id": "SENSOR-78", "pos": "2.8633,17.0702", "reading": "-0.1117,0.8561,0.6308"},
+--   {"id": 79, "sensor_id": "SENSOR-79", "pos": "3.0702,17.9794", "reading": "0.8561,0.6308,-0.7171"},
+--   {"id": 80, "sensor_id": "SENSOR-80", "pos": "2.9794,18.8769", "reading": "0.6308,-0.7171,0.0594"},
+--   {"id": 81, "sensor_id": "SENSOR-81", "pos": "3.8769,-0.0668", "reading": "-0.7171,0.0594,0.4747"},
+--   {"id": 82, "sensor_id": "SENSOR-82", "pos": "3.9332,0.8782", "reading": "0.0594,0.4747,0.5619"},
+--   {"id": 83, "sensor_id": "SENSOR-83", "pos": "3.8782,1.9629", "reading": "0.4747,0.5619,0.5022"},
+--   {"id": 84, "sensor_id": "SENSOR-84", "pos": "3.9629,2.9954", "reading": "0.5619,0.5022,0.8558"},
+--   {"id": 85, "sensor_id": "SENSOR-85", "pos": "3.9954,3.9574", "reading": "0.5022,0.8558,-0.7075"},
+--   {"id": 86, "sensor_id": "SENSOR-86", "pos": "3.9574,4.9832", "reading": "0.8558,-0.7075,-0.8885"},
+--   {"id": 87, "sensor_id": "SENSOR-87", "pos": "3.9832,6.1284", "reading": "-0.7075,-0.8885,-0.0201"},
+--   {"id": 88, "sensor_id": "SENSOR-88", "pos": "4.1284,7.0946", "reading": "-0.8885,-0.0201,-0.4717"},
+--   {"id": 89, "sensor_id": "SENSOR-89", "pos": "4.0946,7.8924", "reading": "-0.0201,-0.4717,0.8660"},
+--   {"id": 90, "sensor_id": "SENSOR-90", "pos": "3.8924,9.0089", "reading": "-0.4717,0.8660,-0.8421"},
+--   {"id": 91, "sensor_id": "SENSOR-91", "pos": "4.0089,10.0712", "reading": "0.8660,-0.8421,-0.6689"},
+--   {"id": 92, "sensor_id": "SENSOR-92", "pos": "4.0712,11.0843", "reading": "-0.8421,-0.6689,-0.0048"},
+--   {"id": 93, "sensor_id": "SENSOR-93", "pos": "4.0843,12.0753", "reading": "-0.6689,-0.0048,0.7864"},
+--   {"id": 94, "sensor_id": "SENSOR-94", "pos": "4.0753,13.1284", "reading": "-0.0048,0.7864,-0.3125"},
+--   {"id": 95, "sensor_id": "SENSOR-95", "pos": "4.1284,13.8939", "reading": "0.7864,-0.3125,0.1448"},
+--   {"id": 96, "sensor_id": "SENSOR-96", "pos": "3.8939,14.8667", "reading": "-0.3125,0.1448,0.4337"},
+--   {"id": 97, "sensor_id": "SENSOR-97", "pos": "3.8667,15.9970", "reading": "0.1448,0.4337,0.8902"},
+--   {"id": 98, "sensor_id": "SENSOR-98", "pos": "3.9970,16.9292", "reading": "0.4337,0.8902,-0.5837"},
+--   {"id": 99, "sensor_id": "SENSOR-99", "pos": "3.9292,18.1299", "reading": "0.8902,-0.5837,0.2824"},
+--   {"id": 100, "sensor_id": "SENSOR-100", "pos": "4.1299,18.8737", "reading": "-0.5837,0.2824,-0.9059"},
+--   {"id": 101, "sensor_id": "SENSOR-101", "pos": "4.8737,-0.1003", "reading": "0.2824,-0.9059,-0.9370"},
+--   {"id": 102, "sensor_id": "SENSOR-102", "pos": "4.8997,0.9993", "reading": "-0.9059,-0.9370,-0.0012"},
+--   {"id": 103, "sensor_id": "SENSOR-103", "pos": "4.9993,2.1180", "reading": "-0.9370,-0.0012,-0.0865"},
+--   {"id": 104, "sensor_id": "SENSOR-104", "pos": "5.1180,2.9531", "reading": "-0.0012,-0.0865,-0.0648"},
+--   {"id": 105, "sensor_id": "SENSOR-105", "pos": "4.9531,4.0217", "reading": "-0.0865,-0.0648,0.8328"},
+--   {"id": 106, "sensor_id": "SENSOR-106", "pos": "5.0217,5.0651", "reading": "-0.0648,0.8328,-0.1968"},
+--   {"id": 107, "sensor_id": "SENSOR-107", "pos": "5.0651,6.1335", "reading": "0.8328,-0.1968,0.9902"},
+--   {"id": 108, "sensor_id": "SENSOR-108", "pos": "5.1335,6.9124", "reading": "-0.1968,0.9902,-0.4641"},
+--   {"id": 109, "sensor_id": "SENSOR-109", "pos": "4.9124,8.0424", "reading": "0.9902,-0.4641,0.5254"},
+--   {"id": 110, "sensor_id": "SENSOR-110", "pos": "5.0424,8.8641", "reading": "-0.4641,0.5254,0.9478"},
+--   {"id": 111, "sensor_id": "SENSOR-111", "pos": "4.8641,9.8594", "reading": "0.5254,0.9478,-0.7867"},
+--   {"id": 112, "sensor_id": "SENSOR-112", "pos": "4.8594,10.9998", "reading": "0.9478,-0.7867,-0.9979"},
+--   {"id": 113, "sensor_id": "SENSOR-113", "pos": "4.9998,11.9870", "reading": "-0.7867,-0.9979,0.4628"},
+--   {"id": 114, "sensor_id": "SENSOR-114", "pos": "4.9870,12.9903", "reading": "-0.9979,0.4628,-0.3877"},
+--   {"id": 115, "sensor_id": "SENSOR-115", "pos": "4.9903,14.1249", "reading": "0.4628,-0.3877,-0.5815"},
+--   {"id": 116, "sensor_id": "SENSOR-116", "pos": "5.1249,14.9705", "reading": "-0.3877,-0.5815,0.8687"},
+--   {"id": 117, "sensor_id": "SENSOR-117", "pos": "4.9705,16.1485", "reading": "-0.5815,0.8687,-0.4606"},
+--   {"id": 118, "sensor_id": "SENSOR-118", "pos": "5.1485,16.9304", "reading": "0.8687,-0.4606,-0.1340"},
+--   {"id": 119, "sensor_id": "SENSOR-119", "pos": "4.9304,18.0788", "reading": "-0.4606,-0.1340,0.6287"},
+--   {"id": 120, "sensor_id": "SENSOR-120", "pos": "5.0788,19.1422", "reading": "-0.1340,0.6287,0.5493"},
+--   {"id": 121, "sensor_id": "SENSOR-121", "pos": "6.1422,-0.1180", "reading": "0.6287,0.5493,-0.9631"},
+--   {"id": 122, "sensor_id": "SENSOR-122", "pos": "5.8820,0.8503", "reading": "0.5493,-0.9631,0.1368"},
+--   {"id": 123, "sensor_id": "SENSOR-123", "pos": "5.8503,2.0694", "reading": "-0.9631,0.1368,0.6315"},
+--   {"id": 124, "sensor_id": "SENSOR-124", "pos": "6.0694,2.9418", "reading": "0.1368,0.6315,-0.7117"},
+--   {"id": 125, "sensor_id": "SENSOR-125", "pos": "5.9418,3.9128", "reading": "0.6315,-0.7117,0.6156"},
+--   {"id": 126, "sensor_id": "SENSOR-126", "pos": "5.9128,5.1303", "reading": "-0.7117,0.6156,0.6497"},
+--   {"id": 127, "sensor_id": "SENSOR-127", "pos": "6.1303,5.9309", "reading": "0.6156,0.6497,-0.6078"},
+--   {"id": 128, "sensor_id": "SENSOR-128", "pos": "5.9309,6.9799", "reading": "0.6497,-0.6078,-0.1188"},
+--   {"id": 129, "sensor_id": "SENSOR-129", "pos": "5.9799,8.0943", "reading": "-0.6078,-0.1188,0.5484"},
+--   {"id": 130, "sensor_id": "SENSOR-130", "pos": "6.0943,9.0824", "reading": "-0.1188,0.5484,0.5390"},
+--   {"id": 131, "sensor_id": "SENSOR-131", "pos": "6.0824,9.8555", "reading": "0.5484,0.5390,0.7318"},
+--   {"id": 132, "sensor_id": "SENSOR-132", "pos": "5.8555,11.0205", "reading": "0.5390,0.7318,-0.8341"},
+--   {"id": 133, "sensor_id": "SENSOR-133", "pos": "6.0205,12.0947", "reading": "0.7318,-0.8341,0.4452"},
+--   {"id": 134, "sensor_id": "SENSOR-134", "pos": "6.0947,12.8932", "reading": "-0.8341,0.4452,0.6676"},
+--   {"id": 135, "sensor_id": "SENSOR-135", "pos": "5.8932,14.0923", "reading": "0.4452,0.6676,0.8587"},
+--   {"id": 136, "sensor_id": "SENSOR-136", "pos": "6.0923,15.0975", "reading": "0.6676,0.8587,0.2022"},
+--   {"id": 137, "sensor_id": "SENSOR-137", "pos": "6.0975,15.9088", "reading": "0.8587,0.2022,-0.0375"},
+--   {"id": 138, "sensor_id": "SENSOR-138", "pos": "5.9088,16.9822", "reading": "0.2022,-0.0375,0.8110"},
+--   {"id": 139, "sensor_id": "SENSOR-139", "pos": "5.9822,18.0823", "reading": "-0.0375,0.8110,-0.9670"},
+--   {"id": 140, "sensor_id": "SENSOR-140", "pos": "6.0823,19.0808", "reading": "0.8110,-0.9670,-0.8367"},
+--   {"id": 141, "sensor_id": "SENSOR-141", "pos": "7.0808,0.1098", "reading": "-0.9670,-0.8367,0.4203"},
+--   {"id": 142, "sensor_id": "SENSOR-142", "pos": "7.1098,0.8749", "reading": "-0.8367,0.4203,0.0440"},
+--   {"id": 143, "sensor_id": "SENSOR-143", "pos": "6.8749,2.0668", "reading": "0.4203,0.0440,0.7848"},
+--   {"id": 144, "sensor_id": "SENSOR-144", "pos": "7.0668,3.1001", "reading": "0.0440,0.7848,0.8981"},
+--   {"id": 145, "sensor_id": "SENSOR-145", "pos": "7.1001,4.1288", "reading": "0.7848,0.8981,0.0452"},
+--   {"id": 146, "sensor_id": "SENSOR-146", "pos": "7.1288,5.0303", "reading": "0.8981,0.0452,-0.4956"},
+--   {"id": 147, "sensor_id": "SENSOR-147", "pos": "7.0303,5.9944", "reading": "0.0452,-0.4956,-0.3370"},
+--   {"id": 148, "sensor_id": "SENSOR-148", "pos": "6.9944,7.1216", "reading": "-0.4956,-0.3370,0.8170"},
+--   {"id": 149, "sensor_id": "SENSOR-149", "pos": "7.1216,7.8550", "reading": "-0.3370,0.8170,0.0992"},
+--   {"id": 150, "sensor_id": "SENSOR-150", "pos": "6.8550,8.8745", "reading": "0.8170,0.0992,-0.8455"},
+--   {"id": 151, "sensor_id": "SENSOR-151", "pos": "6.8745,10.0630", "reading": "0.0992,-0.8455,0.0316"},
+--   {"id": 152, "sensor_id": "SENSOR-152", "pos": "7.0630,11.0066", "reading": "-0.8455,0.0316,-0.6448"},
+--   {"id": 153, "sensor_id": "SENSOR-153", "pos": "7.0066,12.1177", "reading": "0.0316,-0.6448,-0.0938"},
+--   {"id": 154, "sensor_id": "SENSOR-154", "pos": "7.1177,13.1347", "reading": "-0.6448,-0.0938,0.4510"},
+--   {"id": 155, "sensor_id": "SENSOR-155", "pos": "7.1347,14.0068", "reading": "-0.0938,0.4510,0.4926"},
+--   {"id": 156, "sensor_id": "SENSOR-156", "pos": "7.0068,14.9257", "reading": "0.4510,0.4926,0.0077"},
+--   {"id": 157, "sensor_id": "SENSOR-157", "pos": "6.9257,15.9494", "reading": "0.4926,0.0077,0.3463"},
+--   {"id": 158, "sensor_id": "SENSOR-158", "pos": "6.9494,17.1225", "reading": "0.0077,0.3463,-0.9564"},
+--   {"id": 159, "sensor_id": "SENSOR-159", "pos": "7.1225,18.0149", "reading": "0.3463,-0.9564,0.4434"},
+--   {"id": 160, "sensor_id": "SENSOR-160", "pos": "7.0149,18.8732", "reading": "-0.9564,0.4434,0.7239"},
+--   {"id": 161, "sensor_id": "SENSOR-161", "pos": "7.8732,0.0047", "reading": "0.4434,0.7239,0.6000"},
+--   {"id": 162, "sensor_id": "SENSOR-162", "pos": "8.0047,0.9033", "reading": "0.7239,0.6000,-0.0046"},
+--   {"id": 163, "sensor_id": "SENSOR-163", "pos": "7.9033,1.9859", "reading": "0.6000,-0.0046,0.2667"},
+--   {"id": 164, "sensor_id": "SENSOR-164", "pos": "7.9859,3.0677", "reading": "-0.0046,0.2667,-0.6375"},
+--   {"id": 165, "sensor_id": "SENSOR-165", "pos": "8.0677,4.0739", "reading": "0.2667,-0.6375,-0.2224"},
+--   {"id": 166, "sensor_id": "SENSOR-166", "pos": "8.0739,5.0012", "reading": "-0.6375,-0.2224,0.9470"},
+--   {"id": 167, "sensor_id": "SENSOR-167", "pos": "8.0012,6.0519", "reading": "-0.2224,0.9470,-0.3112"},
+--   {"id": 168, "sensor_id": "SENSOR-168", "pos": "8.0519,6.8565", "reading": "0.9470,-0.3112,0.9463"},
+--   {"id": 169, "sensor_id": "SENSOR-169", "pos": "7.8565,8.0665", "reading": "-0.3112,0.9463,-0.0696"},
+--   {"id": 170, "sensor_id": "SENSOR-170", "pos": "8.0665,9.1086", "reading": "0.9463,-0.0696,0.4019"},
+--   {"id": 171, "sensor_id": "SENSOR-171", "pos": "8.1086,10.0900", "reading": "-0.0696,0.4019,0.6560"},
+--   {"id": 172, "sensor_id": "SENSOR-172", "pos": "8.0900,10.9993", "reading": "0.4019,0.6560,-0.9974"},
+--   {"id": 173, "sensor_id": "SENSOR-173", "pos": "7.9993,12.0400", "reading": "0.6560,-0.9974,-0.8359"},
+--   {"id": 174, "sensor_id": "SENSOR-174", "pos": "8.0400,12.9044", "reading": "-0.9974,-0.8359,0.8117"},
+--   {"id": 175, "sensor_id": "SENSOR-175", "pos": "7.9044,13.9666", "reading": "-0.8359,0.8117,0.4439"},
+--   {"id": 176, "sensor_id": "SENSOR-176", "pos": "7.9666,15.1420", "reading": "0.8117,0.4439,-0.0874"},
+--   {"id": 177, "sensor_id": "SENSOR-177", "pos": "8.1420,15.9533", "reading": "0.4439,-0.0874,-0.7251"},
+--   {"id": 178, "sensor_id": "SENSOR-178", "pos": "7.9533,17.1419", "reading": "-0.0874,-0.7251,0.2213"},
+--   {"id": 179, "sensor_id": "SENSOR-179", "pos": "8.1419,17.9896", "reading": "-0.7251,0.2213,-0.6396"},
+--   {"id": 180, "sensor_id": "SENSOR-180", "pos": "7.9896,19.0603", "reading": "0.2213,-0.6396,0.1269"},
+--   {"id": 181, "sensor_id": "SENSOR-181", "pos": "9.0603,0.0984", "reading": "-0.6396,0.1269,-0.8116"},
+--   {"id": 182, "sensor_id": "SENSOR-182", "pos": "9.0984,0.8504", "reading": "0.1269,-0.8116,0.9479"},
+--   {"id": 183, "sensor_id": "SENSOR-183", "pos": "8.8504,1.8746", "reading": "-0.8116,0.9479,0.2552"},
+--   {"id": 184, "sensor_id": "SENSOR-184", "pos": "8.8746,3.1218", "reading": "0.9479,0.2552,-0.3898"},
+--   {"id": 185, "sensor_id": "SENSOR-185", "pos": "9.1218,4.0666", "reading": "0.2552,-0.3898,0.5866"},
+--   {"id": 186, "sensor_id": "SENSOR-186", "pos": "9.0666,4.9869", "reading": "-0.3898,0.5866,-0.6821"},
+--   {"id": 187, "sensor_id": "SENSOR-187", "pos": "8.9869,5.8912", "reading": "0.5866,-0.6821,-0.0649"},
+--   {"id": 188, "sensor_id": "SENSOR-188", "pos": "8.8912,7.0332", "reading": "-0.6821,-0.0649,0.1657"},
+--   {"id": 189, "sensor_id": "SENSOR-189", "pos": "9.0332,7.9041", "reading": "-0.0649,0.1657,-0.6527"},
+--   {"id": 190, "sensor_id": "SENSOR-190", "pos": "8.9041,9.0190", "reading": "0.1657,-0.6527,0.0444"},
+--   {"id": 191, "sensor_id": "SENSOR-191", "pos": "9.0190,9.8783", "reading": "-0.6527,0.0444,-0.2576"},
+--   {"id": 192, "sensor_id": "SENSOR-192", "pos": "8.8783,11.1422", "reading": "0.0444,-0.2576,0.7368"},
+--   {"id": 193, "sensor_id": "SENSOR-193", "pos": "9.1422,12.0383", "reading": "-0.2576,0.7368,0.2797"},
+--   {"id": 194, "sensor_id": "SENSOR-194", "pos": "9.0383,12.9415", "reading": "0.7368,0.2797,-0.4606"},
+--   {"id": 195, "sensor_id": "SENSOR-195", "pos": "8.9415,14.0880", "reading": "0.2797,-0.4606,0.7736"},
+--   {"id": 196, "sensor_id": "SENSOR-196", "pos": "9.0880,14.8977", "reading": "-0.4606,0.7736,0.9432"},
+--   {"id": 197, "sensor_id": "SENSOR-197", "pos": "8.8977,15.9903", "reading": "0.7736,0.9432,-0.1516"},
+--   {"id": 198, "sensor_id": "SENSOR-198", "pos": "8.9903,17.0249", "reading": "0.9432,-0.1516,-0.4566"},
+--   {"id": 199, "sensor_id": "SENSOR-199", "pos": "9.0249,17.9021", "reading": "-0.1516,-0.4566,-0.5741"},
+--   {"id": 200, "sensor_id": "SENSOR-200", "pos": "8.9021,19.0067", "reading": "-0.4566,-0.5741,0.6319"},
+--   {"id": 201, "sensor_id": "SENSOR-201", "pos": "10.0067,-0.0386", "reading": "-0.5741,0.6319,0.5946"},
+--   {"id": 202, "sensor_id": "SENSOR-202", "pos": "9.9614,1.1105", "reading": "0.6319,0.5946,0.1822"},
+--   {"id": 203, "sensor_id": "SENSOR-203", "pos": "10.1105,2.0420", "reading": "0.5946,0.1822,-0.5452"},
+--   {"id": 204, "sensor_id": "SENSOR-204", "pos": "10.0420,2.9309", "reading": "0.1822,-0.5452,0.9836"},
+--   {"id": 205, "sensor_id": "SENSOR-205", "pos": "9.9309,4.1160", "reading": "-0.5452,0.9836,-0.7712"},
+--   {"id": 206, "sensor_id": "SENSOR-206", "pos": "10.1160,5.1415", "reading": "0.9836,-0.7712,0.7293"},
+--   {"id": 207, "sensor_id": "SENSOR-207", "pos": "10.1415,5.9773", "reading": "-0.7712,0.7293,-0.2751"},
+--   {"id": 208, "sensor_id": "SENSOR-208", "pos": "9.9773,6.9315", "reading": "0.7293,-0.2751,0.2521"},
+--   {"id": 209, "sensor_id": "SENSOR-209", "pos": "9.9315,7.9139", "reading": "-0.2751,0.2521,-0.0239"},
+--   {"id": 210, "sensor_id": "SENSOR-210", "pos": "9.9139,9.0948", "reading": "0.2521,-0.0239,-0.4206"},
+--   {"id": 211, "sensor_id": "SENSOR-211", "pos": "10.0948,10.0892", "reading": "-0.0239,-0.4206,0.4754"},
+--   {"id": 212, "sensor_id": "SENSOR-212", "pos": "10.0892,11.0273", "reading": "-0.4206,0.4754,-0.0446"},
+--   {"id": 213, "sensor_id": "SENSOR-213", "pos": "10.0273,11.9182", "reading": "0.4754,-0.0446,-0.0068"},
+--   {"id": 214, "sensor_id": "SENSOR-214", "pos": "9.9182,13.1475", "reading": "-0.0446,-0.0068,-0.8528"},
+--   {"id": 215, "sensor_id": "SENSOR-215", "pos": "10.1475,13.8843", "reading": "-0.0068,-0.8528,-0.0046"},
+--   {"id": 216, "sensor_id": "SENSOR-216", "pos": "9.8843,15.1094", "reading": "-0.8528,-0.0046,0.6680"},
+--   {"id": 217, "sensor_id": "SENSOR-217", "pos": "10.1094,15.9587", "reading": "-0.0046,0.6680,-0.2083"},
+--   {"id": 218, "sensor_id": "SENSOR-218", "pos": "9.9587,17.0378", "reading": "0.6680,-0.2083,0.6973"},
+--   {"id": 219, "sensor_id": "SENSOR-219", "pos": "10.0378,17.9964", "reading": "-0.2083,0.6973,0.1184"},
+--   {"id": 220, "sensor_id": "SENSOR-220", "pos": "9.9964,18.9369", "reading": "0.6973,0.1184,0.4638"},
+--   {"id": 221, "sensor_id": "SENSOR-221", "pos": "10.9369,0.0713", "reading": "0.1184,0.4638,-0.2060"},
+--   {"id": 222, "sensor_id": "SENSOR-222", "pos": "11.0713,0.9933", "reading": "0.4638,-0.2060,-0.3150"},
+--   {"id": 223, "sensor_id": "SENSOR-223", "pos": "10.9933,1.9990", "reading": "-0.2060,-0.3150,0.2075"},
+--   {"id": 224, "sensor_id": "SENSOR-224", "pos": "10.9990,2.8721", "reading": "-0.3150,0.2075,-0.5303"},
+--   {"id": 225, "sensor_id": "SENSOR-225", "pos": "10.8721,3.9993", "reading": "0.2075,-0.5303,-0.1811"},
+--   {"id": 226, "sensor_id": "SENSOR-226", "pos": "10.9993,5.1002", "reading": "-0.5303,-0.1811,0.2550"},
+--   {"id": 227, "sensor_id": "SENSOR-227", "pos": "11.1002,5.9688", "reading": "-0.1811,0.2550,-0.2029"},
+--   {"id": 228, "sensor_id": "SENSOR-228", "pos": "10.9688,7.1046", "reading": "0.2550,-0.2029,0.3368"},
+--   {"id": 229, "sensor_id": "SENSOR-229", "pos": "11.1046,8.0178", "reading": "-0.2029,0.3368,0.4072"},
+--   {"id": 230, "sensor_id": "SENSOR-230", "pos": "11.0178,9.0696", "reading": "0.3368,0.4072,-0.0176"},
+--   {"id": 231, "sensor_id": "SENSOR-231", "pos": "11.0696,9.9691", "reading": "0.4072,-0.0176,-0.7751"},
+--   {"id": 232, "sensor_id": "SENSOR-232", "pos": "10.9691,10.9527", "reading": "-0.0176,-0.7751,-0.2919"},
+--   {"id": 233, "sensor_id": "SENSOR-233", "pos": "10.9527,12.0311", "reading": "-0.7751,-0.2919,-0.3102"},
+--   {"id": 234, "sensor_id": "SENSOR-234", "pos": "11.0311,12.9204", "reading": "-0.2919,-0.3102,0.4903"},
+--   {"id": 235, "sensor_id": "SENSOR-235", "pos": "10.9204,13.9728", "reading": "-0.3102,0.4903,0.8839"},
+--   {"id": 236, "sensor_id": "SENSOR-236", "pos": "10.9728,15.0382", "reading": "0.4903,0.8839,0.0872"},
+--   {"id": 237, "sensor_id": "SENSOR-237", "pos": "11.0382,15.9696", "reading": "0.8839,0.0872,0.1676"},
+--   {"id": 238, "sensor_id": "SENSOR-238", "pos": "10.9696,17.0505", "reading": "0.0872,0.1676,0.5289"},
+--   {"id": 239, "sensor_id": "SENSOR-239", "pos": "11.0505,18.0611", "reading": "0.1676,0.5289,-0.3590"},
+--   {"id": 240, "sensor_id": "SENSOR-240", "pos": "11.0611,18.9974", "reading": "0.5289,-0.3590,0.3033"},
+--   {"id": 241, "sensor_id": "SENSOR-241", "pos": "11.9974,-0.1163", "reading": "-0.3590,0.3033,-0.9140"},
+--   {"id": 242, "sensor_id": "SENSOR-242", "pos": "11.8837,0.9562", "reading": "0.3033,-0.9140,0.9742"},
+--   {"id": 243, "sensor_id": "SENSOR-243", "pos": "11.9562,1.9535", "reading": "-0.9140,0.9742,0.9276"},
+--   {"id": 244, "sensor_id": "SENSOR-244", "pos": "11.9535,3.0735", "reading": "0.9742,0.9276,0.7226"},
+--   {"id": 245, "sensor_id": "SENSOR-245", "pos": "12.0735,4.1326", "reading": "0.9276,0.7226,-0.2887"},
+--   {"id": 246, "sensor_id": "SENSOR-246", "pos": "12.1326,5.0131", "reading": "0.7226,-0.2887,-0.6247"},
+--   {"id": 247, "sensor_id": "SENSOR-247", "pos": "12.0131,6.0251", "reading": "-0.2887,-0.6247,-0.3428"},
+--   {"id": 248, "sensor_id": "SENSOR-248", "pos": "12.0251,7.0793", "reading": "-0.6247,-0.3428,0.2298"},
+--   {"id": 249, "sensor_id": "SENSOR-249", "pos": "12.0793,7.9461", "reading": "-0.3428,0.2298,-0.9410"},
+--   {"id": 250, "sensor_id": "SENSOR-250", "pos": "11.9461,9.0455", "reading": "0.2298,-0.9410,0.2025"},
+--   {"id": 251, "sensor_id": "SENSOR-251", "pos": "12.0455,9.8629", "reading": "-0.9410,0.2025,0.9470"},
+--   {"id": 252, "sensor_id": "SENSOR-252", "pos": "11.8629,11.1461", "reading": "0.2025,0.9470,0.8397"},
+--   {"id": 253, "sensor_id": "SENSOR-253", "pos": "12.1461,12.1391", "reading": "0.9470,0.8397,-0.0229"},
+--   {"id": 254, "sensor_id": "SENSOR-254", "pos": "12.1391,13.1084", "reading": "0.8397,-0.0229,-0.9634"},
+--   {"id": 255, "sensor_id": "SENSOR-255", "pos": "12.1084,13.9567", "reading": "-0.0229,-0.9634,-0.4925"},
+--   {"id": 256, "sensor_id": "SENSOR-256", "pos": "11.9567,14.9063", "reading": "-0.9634,-0.4925,0.2335"},
+--   {"id": 257, "sensor_id": "SENSOR-257", "pos": "11.9063,15.9486", "reading": "-0.4925,0.2335,0.2638"},
+--   {"id": 258, "sensor_id": "SENSOR-258", "pos": "11.9486,17.0345", "reading": "0.2335,0.2638,-0.1964"},
+--   {"id": 259, "sensor_id": "SENSOR-259", "pos": "12.0345,17.8588", "reading": "0.2638,-0.1964,-0.4950"},
+--   {"id": 260, "sensor_id": "SENSOR-260", "pos": "11.8588,19.0304", "reading": "-0.1964,-0.4950,0.0715"},
+--   {"id": 261, "sensor_id": "SENSOR-261", "pos": "13.0304,0.1420", "reading": "-0.4950,0.0715,-0.4375"},
+--   {"id": 262, "sensor_id": "SENSOR-262", "pos": "13.1420,1.1259", "reading": "0.0715,-0.4375,0.0257"},
+--   {"id": 263, "sensor_id": "SENSOR-263", "pos": "13.1259,1.9966", "reading": "-0.4375,0.0257,-0.0131"},
+--   {"id": 264, "sensor_id": "SENSOR-264", "pos": "12.9966,2.8555", "reading": "0.0257,-0.0131,-0.1108"},
+--   {"id": 265, "sensor_id": "SENSOR-265", "pos": "12.8555,3.9261", "reading": "-0.0131,-0.1108,0.6290"},
+--   {"id": 266, "sensor_id": "SENSOR-266", "pos": "12.9261,5.0350", "reading": "-0.1108,0.6290,-0.1354"},
+--   {"id": 267, "sensor_id": "SENSOR-267", "pos": "13.0350,6.0396", "reading": "0.6290,-0.1354,-0.4959"},
+--   {"id": 268, "sensor_id": "SENSOR-268", "pos": "13.0396,6.9705", "reading": "-0.1354,-0.4959,-0.2384"},
+--   {"id": 269, "sensor_id": "SENSOR-269", "pos": "12.9705,7.9258", "reading": "-0.4959,-0.2384,-0.7620"},
+--   {"id": 270, "sensor_id": "SENSOR-270", "pos": "12.9258,9.0107", "reading": "-0.2384,-0.7620,-0.3019"},
+--   {"id": 271, "sensor_id": "SENSOR-271", "pos": "13.0107,9.9344", "reading": "-0.7620,-0.3019,-0.4523"},
+--   {"id": 272, "sensor_id": "SENSOR-272", "pos": "12.9344,11.0039", "reading": "-0.3019,-0.4523,-0.2814"},
+--   {"id": 273, "sensor_id": "SENSOR-273", "pos": "13.0039,11.9980", "reading": "-0.4523,-0.2814,0.7434"},
+--   {"id": 274, "sensor_id": "SENSOR-274", "pos": "12.9980,12.9834", "reading": "-0.2814,0.7434,0.0641"},
+--   {"id": 275, "sensor_id": "SENSOR-275", "pos": "12.9834,14.0943", "reading": "0.7434,0.0641,-0.3276"},
+--   {"id": 276, "sensor_id": "SENSOR-276", "pos": "13.0943,14.9797", "reading": "0.0641,-0.3276,-0.5313"},
+--   {"id": 277, "sensor_id": "SENSOR-277", "pos": "12.9797,15.9256", "reading": "-0.3276,-0.5313,-0.2612"},
+--   {"id": 278, "sensor_id": "SENSOR-278", "pos": "12.9256,16.9642", "reading": "-0.5313,-0.2612,0.3732"},
+--   {"id": 279, "sensor_id": "SENSOR-279", "pos": "12.9642,17.8857", "reading": "-0.2612,0.3732,0.0387"},
+--   {"id": 280, "sensor_id": "SENSOR-280", "pos": "12.8857,18.9547", "reading": "0.3732,0.0387,0.7938"},
+--   {"id": 281, "sensor_id": "SENSOR-281", "pos": "13.9547,-0.0678", "reading": "0.0387,0.7938,0.4589"},
+--   {"id": 282, "sensor_id": "SENSOR-282", "pos": "13.9322,0.9578", "reading": "0.7938,0.4589,0.1292"},
+--   {"id": 283, "sensor_id": "SENSOR-283", "pos": "13.9578,2.1115", "reading": "0.4589,0.1292,-0.3814"},
+--   {"id": 284, "sensor_id": "SENSOR-284", "pos": "14.1115,3.0096", "reading": "0.1292,-0.3814,0.9753"},
+--   {"id": 285, "sensor_id": "SENSOR-285", "pos": "14.0096,3.9509", "reading": "-0.3814,0.9753,-0.9375"},
+--   {"id": 286, "sensor_id": "SENSOR-286", "pos": "13.9509,4.9203", "reading": "0.9753,-0.9375,-0.4141"},
+--   {"id": 287, "sensor_id": "SENSOR-287", "pos": "13.9203,5.9608", "reading": "-0.9375,-0.4141,0.7598"},
+--   {"id": 288, "sensor_id": "SENSOR-288", "pos": "13.9608,7.0560", "reading": "-0.4141,0.7598,-0.6867"},
+--   {"id": 289, "sensor_id": "SENSOR-289", "pos": "14.0560,8.0058", "reading": "0.7598,-0.6867,-0.3986"},
+--   {"id": 290, "sensor_id": "SENSOR-290", "pos": "14.0058,9.1191", "reading": "-0.6867,-0.3986,0.7849"},
+--   {"id": 291, "sensor_id": "SENSOR-291", "pos": "14.1191,10.0688", "reading": "-0.3986,0.7849,-0.0863"},
+--   {"id": 292, "sensor_id": "SENSOR-292", "pos": "14.0688,11.0194", "reading": "0.7849,-0.0863,0.1343"},
+--   {"id": 293, "sensor_id": "SENSOR-293", "pos": "14.0194,11.9428", "reading": "-0.0863,0.1343,0.4162"},
+--   {"id": 294, "sensor_id": "SENSOR-294", "pos": "13.9428,13.1463", "reading": "0.1343,0.4162,-0.5496"},
+--   {"id": 295, "sensor_id": "SENSOR-295", "pos": "14.1463,13.8594", "reading": "0.4162,-0.5496,-0.3202"},
+--   {"id": 296, "sensor_id": "SENSOR-296", "pos": "13.8594,14.9379", "reading": "-0.5496,-0.3202,0.4595"},
+--   {"id": 297, "sensor_id": "SENSOR-297", "pos": "13.9379,16.1140", "reading": "-0.3202,0.4595,0.8857"},
+--   {"id": 298, "sensor_id": "SENSOR-298", "pos": "14.1140,16.8970", "reading": "0.4595,0.8857,-0.1037"},
+--   {"id": 299, "sensor_id": "SENSOR-299", "pos": "13.8970,17.9402", "reading": "0.8857,-0.1037,0.2451"},
+--   {"id": 300, "sensor_id": "SENSOR-300", "pos": "13.9402,19.1177", "reading": "-0.1037,0.2451,-0.1613"},
+--   {"id": 301, "sensor_id": "SENSOR-301", "pos": "15.1177,-0.0130", "reading": "0.2451,-0.1613,-0.2690"},
+--   {"id": 302, "sensor_id": "SENSOR-302", "pos": "14.9870,1.0202", "reading": "-0.1613,-0.2690,0.2634"},
+--   {"id": 303, "sensor_id": "SENSOR-303", "pos": "15.0202,2.0624", "reading": "-0.2690,0.2634,0.9071"},
+--   {"id": 304, "sensor_id": "SENSOR-304", "pos": "15.0624,2.9176", "reading": "0.2634,0.9071,-0.8050"},
+--   {"id": 305, "sensor_id": "SENSOR-305", "pos": "14.9176,3.9520", "reading": "0.9071,-0.8050,-0.7250"},
+--   {"id": 306, "sensor_id": "SENSOR-306", "pos": "14.9520,5.0689", "reading": "-0.8050,-0.7250,0.7485"},
+--   {"id": 307, "sensor_id": "SENSOR-307", "pos": "15.0689,6.1329", "reading": "-0.7250,0.7485,0.8359"},
+--   {"id": 308, "sensor_id": "SENSOR-308", "pos": "15.1329,6.9844", "reading": "0.7485,0.8359,0.6327"},
+--   {"id": 309, "sensor_id": "SENSOR-309", "pos": "14.9844,8.0368", "reading": "0.8359,0.6327,0.8507"},
+--   {"id": 310, "sensor_id": "SENSOR-310", "pos": "15.0368,8.9758", "reading": "0.6327,0.8507,0.5621"},
+--   {"id": 311, "sensor_id": "SENSOR-311", "pos": "14.9758,9.9596", "reading": "0.8507,0.5621,-0.3011"},
+--   {"id": 312, "sensor_id": "SENSOR-312", "pos": "14.9596,11.0395", "reading": "0.5621,-0.3011,0.1929"},
+--   {"id": 313, "sensor_id": "SENSOR-313", "pos": "15.0395,12.1361", "reading": "-0.3011,0.1929,-0.3540"},
+--   {"id": 314, "sensor_id": "SENSOR-314", "pos": "15.1361,12.8793", "reading": "0.1929,-0.3540,0.4314"},
+--   {"id": 315, "sensor_id": "SENSOR-315", "pos": "14.8793,13.8912", "reading": "-0.3540,0.4314,0.4444"},
+--   {"id": 316, "sensor_id": "SENSOR-316", "pos": "14.8912,15.1123", "reading": "0.4314,0.4444,0.3061"},
+--   {"id": 317, "sensor_id": "SENSOR-317", "pos": "15.1123,16.1254", "reading": "0.4444,0.3061,0.6400"},
+--   {"id": 318, "sensor_id": "SENSOR-318", "pos": "15.1254,17.0949", "reading": "0.3061,0.6400,0.7766"},
+--   {"id": 319, "sensor_id": "SENSOR-319", "pos": "15.0949,18.1276", "reading": "0.6400,0.7766,-0.2234"},
+--   {"id": 320, "sensor_id": "SENSOR-320", "pos": "15.1276,19.0843", "reading": "0.7766,-0.2234,0.5295"},
+--   {"id": 321, "sensor_id": "SENSOR-321", "pos": "16.0843,-0.0452", "reading": "-0.2234,0.5295,0.7445"},
+--   {"id": 322, "sensor_id": "SENSOR-322", "pos": "15.9548,1.0289", "reading": "0.5295,0.7445,-0.3762"},
+--   {"id": 323, "sensor_id": "SENSOR-323", "pos": "16.0289,1.9469", "reading": "0.7445,-0.3762,0.9052"},
+--   {"id": 324, "sensor_id": "SENSOR-324", "pos": "15.9469,3.0647", "reading": "-0.3762,0.9052,-0.3470"},
+--   {"id": 325, "sensor_id": "SENSOR-325", "pos": "16.0647,4.0667", "reading": "0.9052,-0.3470,0.9557"},
+--   {"id": 326, "sensor_id": "SENSOR-326", "pos": "16.0667,5.0459", "reading": "-0.3470,0.9557,0.1128"},
+--   {"id": 327, "sensor_id": "SENSOR-327", "pos": "16.0459,6.0960", "reading": "0.9557,0.1128,0.7722"},
+--   {"id": 328, "sensor_id": "SENSOR-328", "pos": "16.0960,7.1165", "reading": "0.1128,0.7722,0.7204"},
+--   {"id": 329, "sensor_id": "SENSOR-329", "pos": "16.1165,7.9665", "reading": "0.7722,0.7204,0.4295"},
+--   {"id": 330, "sensor_id": "SENSOR-330", "pos": "15.9665,9.0794", "reading": "0.7204,0.4295,-0.3948"},
+--   {"id": 331, "sensor_id": "SENSOR-331", "pos": "16.0794,10.1117", "reading": "0.4295,-0.3948,0.6850"},
+--   {"id": 332, "sensor_id": "SENSOR-332", "pos": "16.1117,10.9436", "reading": "-0.3948,0.6850,-0.0925"},
+--   {"id": 333, "sensor_id": "SENSOR-333", "pos": "15.9436,12.1358", "reading": "0.6850,-0.0925,0.0535"},
+--   {"id": 334, "sensor_id": "SENSOR-334", "pos": "16.1358,12.9479", "reading": "-0.0925,0.0535,0.0985"},
+--   {"id": 335, "sensor_id": "SENSOR-335", "pos": "15.9479,14.1433", "reading": "0.0535,0.0985,-0.6244"},
+--   {"id": 336, "sensor_id": "SENSOR-336", "pos": "16.1433,15.0169", "reading": "0.0985,-0.6244,-0.5220"},
+--   {"id": 337, "sensor_id": "SENSOR-337", "pos": "16.0169,16.1158", "reading": "-0.6244,-0.5220,0.3060"},
+--   {"id": 338, "sensor_id": "SENSOR-338", "pos": "16.1158,17.1081", "reading": "-0.5220,0.3060,0.3616"},
+--   {"id": 339, "sensor_id": "SENSOR-339", "pos": "16.1081,18.0644", "reading": "0.3060,0.3616,-0.1334"},
+--   {"id": 340, "sensor_id": "SENSOR-340", "pos": "16.0644,18.9408", "reading": "0.3616,-0.1334,0.5705"},
+--   {"id": 341, "sensor_id": "SENSOR-341", "pos": "16.9408,0.1027", "reading": "-0.1334,0.5705,-0.2499"},
+--   {"id": 342, "sensor_id": "SENSOR-342", "pos": "17.1027,0.9861", "reading": "0.5705,-0.2499,-0.2909"},
+--   {"id": 343, "sensor_id": "SENSOR-343", "pos": "16.9861,2.0080", "reading": "-0.2499,-0.2909,-0.1240"},
+--   {"id": 344, "sensor_id": "SENSOR-344", "pos": "17.0080,3.0148", "reading": "-0.2909,-0.1240,0.7724"},
+--   {"id": 345, "sensor_id": "SENSOR-345", "pos": "17.0148,3.9063", "reading": "-0.1240,0.7724,0.4822"},
+--   {"id": 346, "sensor_id": "SENSOR-346", "pos": "16.9063,4.9217", "reading": "0.7724,0.4822,-0.6031"},
+--   {"id": 347, "sensor_id": "SENSOR-347", "pos": "16.9217,6.0459", "reading": "0.4822,-0.6031,-0.2437"},
+--   {"id": 348, "sensor_id": "SENSOR-348", "pos": "17.0459,7.0542", "reading": "-0.6031,-0.2437,-0.2366"},
+--   {"id": 349, "sensor_id": "SENSOR-349", "pos": "17.0542,7.9800", "reading": "-0.2437,-0.2366,0.6934"},
+--   {"id": 350, "sensor_id": "SENSOR-350", "pos": "16.9800,9.0856", "reading": "-0.2366,0.6934,-0.0072"},
+--   {"id": 351, "sensor_id": "SENSOR-351", "pos": "17.0856,9.9625", "reading": "0.6934,-0.0072,-0.7889"},
+--   {"id": 352, "sensor_id": "SENSOR-352", "pos": "16.9625,10.9564", "reading": "-0.0072,-0.7889,0.5885"},
+--   {"id": 353, "sensor_id": "SENSOR-353", "pos": "16.9564,11.9814", "reading": "-0.7889,0.5885,-0.7417"},
+--   {"id": 354, "sensor_id": "SENSOR-354", "pos": "16.9814,13.1159", "reading": "0.5885,-0.7417,0.0137"},
+--   {"id": 355, "sensor_id": "SENSOR-355", "pos": "17.1159,14.0723", "reading": "-0.7417,0.0137,-0.7237"},
+--   {"id": 356, "sensor_id": "SENSOR-356", "pos": "17.0723,14.9095", "reading": "0.0137,-0.7237,0.7914"},
+--   {"id": 357, "sensor_id": "SENSOR-357", "pos": "16.9095,15.9634", "reading": "-0.7237,0.7914,0.5229"},
+--   {"id": 358, "sensor_id": "SENSOR-358", "pos": "16.9634,16.9645", "reading": "0.7914,0.5229,0.8816"},
+--   {"id": 359, "sensor_id": "SENSOR-359", "pos": "16.9645,18.1040", "reading": "0.5229,0.8816,-0.2412"},
+--   {"id": 360, "sensor_id": "SENSOR-360", "pos": "17.1040,18.9989", "reading": "0.8816,-0.2412,0.7964"},
+--   {"id": 361, "sensor_id": "SENSOR-361", "pos": "17.9989,-0.1183", "reading": "-0.2412,0.7964,0.2273"},
+--   {"id": 362, "sensor_id": "SENSOR-362", "pos": "17.8817,1.0883", "reading": "0.7964,0.2273,-0.3937"},
+--   {"id": 363, "sensor_id": "SENSOR-363", "pos": "18.0883,1.8887", "reading": "0.2273,-0.3937,0.8297"},
+--   {"id": 364, "sensor_id": "SENSOR-364", "pos": "17.8887,3.0021", "reading": "-0.3937,0.8297,-0.1749"},
+--   {"id": 365, "sensor_id": "SENSOR-365", "pos": "18.0021,3.8914", "reading": "0.8297,-0.1749,-0.1810"},
+--   {"id": 366, "sensor_id": "SENSOR-366", "pos": "17.8914,5.1187", "reading": "-0.1749,-0.1810,0.7692"},
+--   {"id": 367, "sensor_id": "SENSOR-367", "pos": "18.1187,6.0784", "reading": "-0.1810,0.7692,-0.0537"},
+--   {"id": 368, "sensor_id": "SENSOR-368", "pos": "18.0784,7.1322", "reading": "0.7692,-0.0537,0.8666"},
+--   {"id": 369, "sensor_id": "SENSOR-369", "pos": "18.1322,7.9638", "reading": "-0.0537,0.8666,-0.9482"},
+--   {"id": 370, "sensor_id": "SENSOR-370", "pos": "17.9638,9.1195", "reading": "0.8666,-0.9482,-0.9253"},
+--   {"id": 371, "sensor_id": "SENSOR-371", "pos": "18.1195,10.0341", "reading": "-0.9482,-0.9253,-0.4244"},
+--   {"id": 372, "sensor_id": "SENSOR-372", "pos": "18.0341,10.9409", "reading": "-0.9253,-0.4244,-0.7570"},
+--   {"id": 373, "sensor_id": "SENSOR-373", "pos": "17.9409,12.1245", "reading": "-0.4244,-0.7570,0.6313"},
+--   {"id": 374, "sensor_id": "SENSOR-374", "pos": "18.1245,12.9738", "reading": "-0.7570,0.6313,-0.4184"},
+--   {"id": 375, "sensor_id": "SENSOR-375", "pos": "17.9738,13.9729", "reading": "0.6313,-0.4184,0.9515"},
+--   {"id": 376, "sensor_id": "SENSOR-376", "pos": "17.9729,15.1154", "reading": "-0.4184,0.9515,0.3114"},
+--   {"id": 377, "sensor_id": "SENSOR-377", "pos": "18.1154,15.9919", "reading": "0.9515,0.3114,0.6566"},
+--   {"id": 378, "sensor_id": "SENSOR-378", "pos": "17.9919,17.1300", "reading": "0.3114,0.6566,0.0695"},
+--   {"id": 379, "sensor_id": "SENSOR-379", "pos": "18.1300,17.8578", "reading": "0.6566,0.0695,-0.5687"},
+--   {"id": 380, "sensor_id": "SENSOR-380", "pos": "17.8578,18.8612", "reading": "0.0695,-0.5687,-0.5492"},
+--   {"id": 381, "sensor_id": "SENSOR-381", "pos": "18.8612,-0.0637", "reading": "-0.5687,-0.5492,-0.5833"},
+--   {"id": 382, "sensor_id": "SENSOR-382", "pos": "18.9363,0.8864", "reading": "-0.5492,-0.5833,-0.5046"},
+--   {"id": 383, "sensor_id": "SENSOR-383", "pos": "18.8864,2.0947", "reading": "-0.5833,-0.5046,-0.6349"},
+--   {"id": 384, "sensor_id": "SENSOR-384", "pos": "19.0947,2.9372", "reading": "-0.5046,-0.6349,0.3045"},
+--   {"id": 385, "sensor_id": "SENSOR-385", "pos": "18.9372,4.1427", "reading": "-0.6349,0.3045,0.0810"},
+--   {"id": 386, "sensor_id": "SENSOR-386", "pos": "19.1427,5.0467", "reading": "0.3045,0.0810,0.6360"},
+--   {"id": 387, "sensor_id": "SENSOR-387", "pos": "19.0467,6.0985", "reading": "0.0810,0.6360,0.4929"},
+--   {"id": 388, "sensor_id": "SENSOR-388", "pos": "19.0985,7.0104", "reading": "0.6360,0.4929,-0.7386"},
+--   {"id": 389, "sensor_id": "SENSOR-389", "pos": "19.0104,7.9147", "reading": "0.4929,-0.7386,0.4581"},
+--   {"id": 390, "sensor_id": "SENSOR-390", "pos": "18.9147,8.9176", "reading": "-0.7386,0.4581,0.1529"},
+--   {"id": 391, "sensor_id": "SENSOR-391", "pos": "18.9176,9.9125", "reading": "0.4581,0.1529,0.2223"},
+--   {"id": 392, "sensor_id": "SENSOR-392", "pos": "18.9125,10.9243", "reading": "0.1529,0.2223,-0.0740"},
+--   {"id": 393, "sensor_id": "SENSOR-393", "pos": "18.9243,11.9048", "reading": "0.2223,-0.0740,0.1806"},
+--   {"id": 394, "sensor_id": "SENSOR-394", "pos": "18.9048,13.0457", "reading": "-0.0740,0.1806,-0.9410"},
+--   {"id": 395, "sensor_id": "SENSOR-395", "pos": "19.0457,14.0122", "reading": "0.1806,-0.9410,0.5382"},
+--   {"id": 396, "sensor_id": "SENSOR-396", "pos": "19.0122,15.0954", "reading": "-0.9410,0.5382,0.7292"},
+--   {"id": 397, "sensor_id": "SENSOR-397", "pos": "19.0954,16.0739", "reading": "0.5382,0.7292,-0.1332"},
+--   {"id": 398, "sensor_id": "SENSOR-398", "pos": "19.0739,16.8892", "reading": "0.7292,-0.1332,-0.2642"},
+--   {"id": 399, "sensor_id": "SENSOR-399", "pos": "18.8892,18.0687", "reading": "-0.1332,-0.2642,-0.6009"},
+--   {"id": 400, "sensor_id": "SENSOR-400", "pos": "19.0687,19.0229", "reading": "-0.2642,-0.6009,0.5141"}
+-- ]};
+
+SELECT (SELECT COUNT(*) FROM "vsc_sensors") AS "sensors";
+
+-- The flat point cloud: the 800 flat coordinates of the grid, in
+-- (row, col) order.
+REPLACE INTO vsc_cloud OVERWRITE ALL
+SELECT ARRAY_TO_STRING(ARRAY_AGG(CAST("pos" AS VARCHAR), 65536), ',') AS "cloud"
+FROM "vsc_sensors"
+PARTITIONED BY ALL;
+
+-- ---------------------------------------------------------------------------
+-- 2. The grid's spatial coverage.
+--
+-- A higher dimension with moderate lacunarity means denser, more even
+-- coverage; a lower dimension or high lacunarity would flag a sparse
+-- or clustered deployment. A jittered 20x20 grid lands between the
+-- sparse-scatter and perfect-plane cases, and that is the point: the
+-- number moves with how the grid actually covers space.
+-- ---------------------------------------------------------------------------
+SELECT fractal_dimension_boxcount("cloud", 2) AS "coverage_dimension"
+FROM "vsc_cloud";
+
+SELECT fractal_json_value(
+           fractal_morphological_complexity("cloud", 2), '$.dimension') AS "morph_dimension",
+       fractal_json_value(
+           fractal_morphological_complexity("cloud", 2), '$.lacunarity') AS "lacunarity"
+FROM "vsc_cloud";
+
+-- ---------------------------------------------------------------------------
+-- 3. The air-quality event.
+--
+-- 240 samples: the readings hover around a baseline for the first 150,
+-- then an event drives an accumulating drift for the final 90. (A pure
+-- volatility rescale would not work here -- the DFA exponent is
+-- scale-invariant, so what the drift report reliably flags is exactly
+-- this memory-structure change, hovering -> accumulating, in the recent
+-- window.)
+-- ---------------------------------------------------------------------------
+-- @fixture vsc_aq {"rows": [
+--   {"t": 1, "x": -0.032673},
+--   {"t": 2, "x": -0.047111},
+--   {"t": 3, "x": -0.030973},
+--   {"t": 4, "x": 0.009489},
+--   {"t": 5, "x": -0.034588},
+--   {"t": 6, "x": 0.019276},
+--   {"t": 7, "x": -0.031584},
+--   {"t": 8, "x": -0.045582},
+--   {"t": 9, "x": 0.023388},
+--   {"t": 10, "x": -0.006853},
+--   {"t": 11, "x": -0.041047},
+--   {"t": 12, "x": -0.022262},
+--   {"t": 13, "x": -0.040593},
+--   {"t": 14, "x": -0.012364},
+--   {"t": 15, "x": -0.001519},
+--   {"t": 16, "x": -0.014204},
+--   {"t": 17, "x": -0.005586},
+--   {"t": 18, "x": 0.042803},
+--   {"t": 19, "x": 0.031541},
+--   {"t": 20, "x": -0.035854},
+--   {"t": 21, "x": 0.002972},
+--   {"t": 22, "x": 0.023736},
+--   {"t": 23, "x": 0.028094},
+--   {"t": 24, "x": 0.025111},
+--   {"t": 25, "x": 0.042792},
+--   {"t": 26, "x": -0.035375},
+--   {"t": 27, "x": -0.044423},
+--   {"t": 28, "x": -0.001007},
+--   {"t": 29, "x": -0.023586},
+--   {"t": 30, "x": 0.043299},
+--   {"t": 31, "x": -0.042106},
+--   {"t": 32, "x": -0.033446},
+--   {"t": 33, "x": -0.000242},
+--   {"t": 34, "x": 0.03932},
+--   {"t": 35, "x": -0.015626},
+--   {"t": 36, "x": 0.00724},
+--   {"t": 37, "x": 0.021687},
+--   {"t": 38, "x": 0.04451},
+--   {"t": 39, "x": -0.029185},
+--   {"t": 40, "x": 0.01412},
+--   {"t": 41, "x": -0.045294},
+--   {"t": 42, "x": -0.046851},
+--   {"t": 43, "x": -5.9e-05},
+--   {"t": 44, "x": -0.004324},
+--   {"t": 45, "x": -0.003242},
+--   {"t": 46, "x": 0.041638},
+--   {"t": 47, "x": -0.009841},
+--   {"t": 48, "x": 0.049511},
+--   {"t": 49, "x": -0.023206},
+--   {"t": 50, "x": 0.026269},
+--   {"t": 51, "x": 0.047392},
+--   {"t": 52, "x": -0.039335},
+--   {"t": 53, "x": -0.049894},
+--   {"t": 54, "x": 0.02314},
+--   {"t": 55, "x": -0.019387},
+--   {"t": 56, "x": -0.029074},
+--   {"t": 57, "x": 0.043437},
+--   {"t": 58, "x": -0.02303},
+--   {"t": 59, "x": -0.006701},
+--   {"t": 60, "x": 0.031436},
+--   {"t": 61, "x": 0.027466},
+--   {"t": 62, "x": -0.048154},
+--   {"t": 63, "x": 0.00684},
+--   {"t": 64, "x": 0.031574},
+--   {"t": 65, "x": -0.035586},
+--   {"t": 66, "x": 0.03078},
+--   {"t": 67, "x": 0.032485},
+--   {"t": 68, "x": -0.030389},
+--   {"t": 69, "x": -0.00594},
+--   {"t": 70, "x": 0.027421},
+--   {"t": 71, "x": 0.026949},
+--   {"t": 72, "x": 0.036591},
+--   {"t": 73, "x": -0.041707},
+--   {"t": 74, "x": 0.022259},
+--   {"t": 75, "x": 0.033379},
+--   {"t": 76, "x": 0.042936},
+--   {"t": 77, "x": 0.010111},
+--   {"t": 78, "x": -0.001873},
+--   {"t": 79, "x": 0.040549},
+--   {"t": 80, "x": -0.04835},
+--   {"t": 81, "x": -0.041836},
+--   {"t": 82, "x": 0.021013},
+--   {"t": 83, "x": 0.002202},
+--   {"t": 84, "x": 0.039238},
+--   {"t": 85, "x": 0.044906},
+--   {"t": 86, "x": 0.002259},
+--   {"t": 87, "x": -0.024781},
+--   {"t": 88, "x": -0.01685},
+--   {"t": 89, "x": 0.040848},
+--   {"t": 90, "x": 0.004959},
+--   {"t": 91, "x": -0.042277},
+--   {"t": 92, "x": 0.001578},
+--   {"t": 93, "x": -0.03224},
+--   {"t": 94, "x": -0.004689},
+--   {"t": 95, "x": 0.02255},
+--   {"t": 96, "x": 0.024631},
+--   {"t": 97, "x": 0.000386},
+--   {"t": 98, "x": 0.017315},
+--   {"t": 99, "x": -0.047821},
+--   {"t": 100, "x": 0.02217},
+--   {"t": 101, "x": 0.036197},
+--   {"t": 102, "x": 0.030001},
+--   {"t": 103, "x": -0.00023},
+--   {"t": 104, "x": 0.013336},
+--   {"t": 105, "x": -0.031876},
+--   {"t": 106, "x": -0.01112},
+--   {"t": 107, "x": 0.047348},
+--   {"t": 108, "x": -0.015558},
+--   {"t": 109, "x": 0.047316},
+--   {"t": 110, "x": -0.003478},
+--   {"t": 111, "x": 0.020094},
+--   {"t": 112, "x": 0.0328},
+--   {"t": 113, "x": -0.049869},
+--   {"t": 114, "x": -0.041795},
+--   {"t": 115, "x": 0.040585},
+--   {"t": 116, "x": 0.022197},
+--   {"t": 117, "x": -0.004368},
+--   {"t": 118, "x": -0.036254},
+--   {"t": 119, "x": 0.011065},
+--   {"t": 120, "x": -0.031981},
+--   {"t": 121, "x": 0.006345},
+--   {"t": 122, "x": -0.040578},
+--   {"t": 123, "x": 0.047397},
+--   {"t": 124, "x": 0.012761},
+--   {"t": 125, "x": -0.01949},
+--   {"t": 126, "x": 0.029331},
+--   {"t": 127, "x": -0.034107},
+--   {"t": 128, "x": -0.003245},
+--   {"t": 129, "x": 0.008285},
+--   {"t": 130, "x": -0.032637},
+--   {"t": 131, "x": 0.002219},
+--   {"t": 132, "x": -0.012878},
+--   {"t": 133, "x": 0.036841},
+--   {"t": 134, "x": 0.013985},
+--   {"t": 135, "x": -0.023029},
+--   {"t": 136, "x": 0.038678},
+--   {"t": 137, "x": 0.047162},
+--   {"t": 138, "x": -0.007581},
+--   {"t": 139, "x": -0.022828},
+--   {"t": 140, "x": -0.028707},
+--   {"t": 141, "x": 0.031594},
+--   {"t": 142, "x": 0.02973},
+--   {"t": 143, "x": 0.009112},
+--   {"t": 144, "x": -0.02726},
+--   {"t": 145, "x": 0.049182},
+--   {"t": 146, "x": -0.038561},
+--   {"t": 147, "x": 0.036466},
+--   {"t": 148, "x": -0.013756},
+--   {"t": 149, "x": 0.012606},
+--   {"t": 150, "x": -0.001196},
+--   {"t": 151, "x": -0.022224},
+--   {"t": 152, "x": 0.001548},
+--   {"t": 153, "x": -0.000683},
+--   {"t": 154, "x": -0.001022},
+--   {"t": 155, "x": -0.043663},
+--   {"t": 156, "x": -0.043891},
+--   {"t": 157, "x": -0.010493},
+--   {"t": 158, "x": -0.02091},
+--   {"t": 159, "x": 0.013957},
+--   {"t": 160, "x": 0.019879},
+--   {"t": 161, "x": 0.043068},
+--   {"t": 162, "x": 0.032768},
+--   {"t": 163, "x": 0.017015},
+--   {"t": 164, "x": 0.027388},
+--   {"t": 165, "x": 0.000872},
+--   {"t": 166, "x": -0.008182},
+--   {"t": 167, "x": 0.004568},
+--   {"t": 168, "x": -0.005576},
+--   {"t": 169, "x": 0.011265},
+--   {"t": 170, "x": 0.031627},
+--   {"t": 171, "x": 0.030747},
+--   {"t": 172, "x": -0.008005},
+--   {"t": 173, "x": -0.022601},
+--   {"t": 174, "x": -0.038112},
+--   {"t": 175, "x": -0.013598},
+--   {"t": 176, "x": 0.030599},
+--   {"t": 177, "x": 0.034958},
+--   {"t": 178, "x": 0.043339},
+--   {"t": 179, "x": 0.069782},
+--   {"t": 180, "x": 0.051832},
+--   {"t": 181, "x": 0.066999},
+--   {"t": 182, "x": 0.0213},
+--   {"t": 183, "x": 0.07001},
+--   {"t": 184, "x": 0.11639},
+--   {"t": 185, "x": 0.152519},
+--   {"t": 186, "x": 0.138086},
+--   {"t": 187, "x": 0.106849},
+--   {"t": 188, "x": 0.089707},
+--   {"t": 189, "x": 0.101199},
+--   {"t": 190, "x": 0.054148},
+--   {"t": 191, "x": 0.064272},
+--   {"t": 192, "x": 0.11162},
+--   {"t": 193, "x": 0.153603},
+--   {"t": 194, "x": 0.152457},
+--   {"t": 195, "x": 0.104288},
+--   {"t": 196, "x": 0.079663},
+--   {"t": 197, "x": 0.091339},
+--   {"t": 198, "x": 0.104528},
+--   {"t": 199, "x": 0.09471},
+--   {"t": 200, "x": 0.069961},
+--   {"t": 201, "x": 0.073535},
+--   {"t": 202, "x": 0.051659},
+--   {"t": 203, "x": 0.052944},
+--   {"t": 204, "x": 0.05229},
+--   {"t": 205, "x": 0.046751},
+--   {"t": 206, "x": 0.078201},
+--   {"t": 207, "x": 0.071429},
+--   {"t": 208, "x": 0.046634},
+--   {"t": 209, "x": 0.034714},
+--   {"t": 210, "x": -0.003387},
+--   {"t": 211, "x": -0.018483},
+--   {"t": 212, "x": -0.0411},
+--   {"t": 213, "x": -0.055168},
+--   {"t": 214, "x": -0.017998},
+--   {"t": 215, "x": -0.014791},
+--   {"t": 216, "x": -0.031172},
+--   {"t": 217, "x": -0.057738},
+--   {"t": 218, "x": -0.070799},
+--   {"t": 219, "x": -0.052137},
+--   {"t": 220, "x": -0.050205},
+--   {"t": 221, "x": -0.010516},
+--   {"t": 222, "x": 0.012428},
+--   {"t": 223, "x": 0.018887},
+--   {"t": 224, "x": -0.000182},
+--   {"t": 225, "x": 0.048585},
+--   {"t": 226, "x": 0.001709},
+--   {"t": 227, "x": -0.018998},
+--   {"t": 228, "x": 0.018994},
+--   {"t": 229, "x": -0.015341},
+--   {"t": 230, "x": -0.035272},
+--   {"t": 231, "x": 0.003974},
+--   {"t": 232, "x": -0.000343},
+--   {"t": 233, "x": 0.006374},
+--   {"t": 234, "x": 0.027185},
+--   {"t": 235, "x": -0.000297},
+--   {"t": 236, "x": -0.016308},
+--   {"t": 237, "x": 0.006669},
+--   {"t": 238, "x": 0.050956},
+--   {"t": 239, "x": 0.045768},
+--   {"t": 240, "x": 0.058025}
+-- ]};
+
+REPLACE INTO vsc_aq_series OVERWRITE ALL
+SELECT ARRAY_TO_STRING(ARRAY_AGG(CAST("x" AS VARCHAR), 16384), ',') AS "series"
+FROM (SELECT "t", "x" FROM "vsc_aq" GROUP BY "t", "x")
+PARTITIONED BY ALL;
+
+SELECT fractal_dimension_dfa("series") AS "whole_series_alpha" FROM "vsc_aq_series";
+
+SELECT fractal_dimension_drift("series", 48) AS "drift_report" FROM "vsc_aq_series";
+
+SELECT fractal_json_value("d", '$.drift') AS "drift",
+       fractal_json_value("d", '$.drift') > 0.5 AS "drift_detected"
+FROM (SELECT fractal_dimension_drift("series", 48) AS "d" FROM "vsc_aq_series")
+GROUP BY "d";
+
+-- ---------------------------------------------------------------------------
+-- 4. fractal_agent_network_coverage_alert: the coverage alert.
+--
+-- The composition folds the grid's morphological complexity and the
+-- air-quality drift into one alert, with a reasoning step on top.
+-- ---------------------------------------------------------------------------
+-- @call agent/network_coverage_alert {"point_cloud_table": "vsc_cloud",
+--                                  "point_cloud_column": "cloud",
+--                                  "drift_series_table": "vsc_aq_series",
+--                                  "drift_series_column": "series",
+--                                  "boxcount_dim": 2, "drift_win": 48,
+--                                  "drift_threshold": 0.5};
+
+-- ---------------------------------------------------------------------------
+-- 5. fractal_search_explore: a diverse sample of the reading profiles.
+--
+-- "What KINDS of zones do we actually have" (quiet-residential vs.
+-- high-traffic-commercial vs. ...) rather than scanning all 400 sensors
+-- by hand.
+-- ---------------------------------------------------------------------------
+-- @call search/explore {"datasource": "vsc_sensors", "vectorColumn": "reading",
+--                      "idColumn": "id", "query": "0,0,0", "k": 6,
+--                      "params": "{\"population_size\": 6, \"iterations\": 8}"} AS vsc_zones;
+
+SELECT z."ord" AS "ord", s."id" AS "id", s."sensor_id" AS "sensor_id"
+FROM "vsc_zones" z, "vsc_sensors" s
+WHERE z."doc_id" = s."id"
+GROUP BY z."ord", s."id", s."sensor_id"
+ORDER BY z."ord";
+
+-- The same zones, scored against the first sensor's own reading.
+SELECT s."id" AS "id", s."sensor_id" AS "sensor_id",
+       ROUND(1.0 - fractal_vector_cosine_distance(a."reading", s."reading"), 4) AS "score"
+FROM "vsc_zones" z, "vsc_sensors" s, "vsc_sensors" a
+WHERE z."doc_id" = s."id" AND a."id" = 1
+GROUP BY s."id", s."sensor_id", a."reading", s."reading"
+ORDER BY "score" DESC;
+
+-- ---------------------------------------------------------------------------
+-- 6. Reasoning: the city-ops narrative.
+-- ---------------------------------------------------------------------------
+SELECT fractal_reason(
+    'city-ops alert rationale over this sensor-grid coverage complexity and air-quality drift reading',
+    CONCAT('{"coverage_dimension":"',
+           (SELECT fractal_dimension_boxcount("cloud", 2) FROM "vsc_cloud"),
+           '","drift":"',
+           (SELECT fractal_json_value("d", '$.drift')
+            FROM (SELECT fractal_dimension_drift("series", 48) AS "d"
+                  FROM "vsc_aq_series") GROUP BY "d"),
+           '"}')) AS "narrative";
+
+-- ---------------------------------------------------------------------------
+-- 7. The kit's own headline check.
+--
+-- The demo contract: a kit prints its headline and exits
+-- non-zero unless the result holds. All 400 sensors are on the grid,
+-- the coverage dimension sits between the sparse-scatter and
+-- perfect-plane cases, and the air-quality event is detected.
+-- ---------------------------------------------------------------------------
+SELECT CASE
+           WHEN (SELECT COUNT(*) FROM "vsc_sensors") = 400
+            AND (SELECT fractal_dimension_boxcount("cloud", 2) FROM "vsc_cloud") > 1.0
+            AND (SELECT fractal_dimension_boxcount("cloud", 2) FROM "vsc_cloud") < 2.5
+            AND (SELECT fractal_json_value("d", '$.drift')
+                  FROM (SELECT fractal_dimension_drift("series", 48) AS "d"
+                        FROM "vsc_aq_series") GROUP BY "d") > 0.5
+            AND (SELECT COUNT(*) FROM "vsc_zones" WHERE "doc_id" IS NOT NULL) = 6
+            THEN 'HEADLINE kit=smart-cities-iot ok'
+            ELSE 'HEADLINE kit=smart-cities-iot FAILED'
+       END AS "headline";

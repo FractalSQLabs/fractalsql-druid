@@ -1,0 +1,18 @@
+# The same Druid image as Dockerfile, running on Java 25 instead of the Java Druid ships with.
+#
+#   FSQL_DRUID_DOCKERFILE=Dockerfile.java25 docker compose ... build
+#
+# Druid's own image carries Java 21 (Druid 38) or 17 (Druid 37). This copies a Temurin 25 runtime over it
+# and points Druid at it; the extension jar is unchanged.
+
+ARG DRUID_VERSION=38.0.0
+FROM eclipse-temurin:25-jre AS java25
+
+FROM apache/druid:${DRUID_VERSION}
+COPY --from=java25 /opt/java/openjdk /usr/lib/jvm/temurin25_jre
+ENV JAVA_HOME=/usr/lib/jvm/temurin25_jre \
+    DRUID_JAVA_HOME=/usr/lib/jvm/temurin25_jre \
+    JAVA_OPTS="--enable-native-access=ALL-UNNAMED"
+
+COPY extensions/fractalsql-druid/fractalsql-druid.jar \
+     /opt/druid/extensions/fractalsql-druid/fractalsql-druid.jar
