@@ -1,0 +1,40 @@
+fractalsql-druid-mcp: how to start the MCP server
+
+Where it is
+  .deb / .rpm package      /usr/bin/fractalsql-druid-mcp
+  tarball / macOS archive  bin/fractalsql-druid-mcp, in the unpacked bundle
+  install.sh               <prefix>/bin/fractalsql-druid-mcp (default prefix /usr/local)
+  The two .mcp-*-lock files must stay beside the executable: the server refuses to start without them.
+
+Settings (environment)
+  DRUID_URL                        required: the Druid router or broker the SQL API answers on, for example http://localhost:8888
+  DRUID_FRACTALSQL_URL             where the extension's /fractalsql endpoints are served: a broker, for example
+                                   http://localhost:8082 (the router does not forward them). Default: DRUID_URL
+  DRUID_USER / DRUID_PASSWORD      basic credentials, or DRUID_TOKEN for a bearer token, when the cluster has authentication on.
+                                   The Druid identity is the authorization boundary: give it only the datasources the client may see
+  FSQL_MCP_READ_ONLY=true          refuse every tool that writes state
+  The server is a client of Druid: the FractalSQL extension must be loaded on the broker, and fractalsqld must be running
+  for the reasoning, embedding and enterprise tools.
+
+stdio (the default: a client such as Claude Desktop or Cursor launches the server)
+  DRUID_URL=http://localhost:8888 DRUID_FRACTALSQL_URL=http://localhost:8082 \
+  DRUID_USER=app DRUID_PASSWORD=<secret> \
+  fractalsql-druid-mcp
+
+HTTP or HTTPS (a bearer token is required)
+  FSQL_MCP_AUTH_TOKEN=<secret> DRUID_URL=http://localhost:8888 fractalsql-druid-mcp --http 8765
+  FSQL_MCP_AUTH_TOKEN=<secret> DRUID_URL=http://localhost:8888 \
+  fractalsql-druid-mcp --https 8765 --tls-cert cert.pem --tls-key key.pem
+  HTTP binds 127.0.0.1 and serves /mcp. A plaintext bind to any other address is refused unless
+  FSQL_MCP_ALLOW_PLAINTEXT_NONLOOPBACK=true; use --https instead.
+
+Check it
+  fractalsql-druid-mcp --version
+  fractalsql-druid-mcp --list-tools
+
+What it needs
+  Linux    OpenSSL's runtime library (libssl.so.3), which the package depends on.
+  macOS    Homebrew's openssl@3 (brew install openssl@3). The files are unsigned: clear quarantine once
+               xattr -d com.apple.quarantine bin/fractalsql-druid-mcp
+
+All settings are in README.md next to this file, and in docs/mcp-plugin.md.

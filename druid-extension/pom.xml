@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  fractalsql-druid: FractalSQL as an Apache Druid extension.
+
+  Produces the JAR that a Druid node loads via druid.extensions.loadList.
+  The JAR carries:
+    - the extension classes (DruidModule + Calcite operator bridges)
+    - a JNI shim, linked against the UNMODIFIED vendored core archive in
+      ../include/<os>-<arch>/, shipped as a per-platform native payload
+
+  The core in ../include/ is a core library and is never edited or
+  rebuilt here; this module only links against the shipped drop.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.fractalsqlabs</groupId>
+  <artifactId>fractalsql-druid</artifactId>
+  <version>2.0.0</version>
+  <packaging>jar</packaging>
+
+  <name>FractalSQL for Apache Druid</name>
+  <description>
+    FractalSQL as an Apache Druid extension: the fractal_* SQL surface
+    registered into Druid's Calcite planner, backed by the pure-C
+    FractalSQL core.
+  </description>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Bytecode level 17: the apache/druid:37 image runs Java 17, 38 runs Java 21, and 17 bytecode loads on 21 and 25 too.
+         The extension uses nothing newer. Override with -Dmaven.compiler.release=NN. -->
+    <maven.compiler.release>17</maven.compiler.release>
+    <!-- Built against Druid 38; the same sources compile and pass their tests against 37 (-Ddruid.version=37.0.0). -->
+    <druid.version>38.0.0</druid.version>
+    <junit.version>5.10.2</junit.version>
+    <!-- The payload directory the unit tests load from; override with -Dfsql.platform=<os>-<arch> on another platform. -->
+    <fsql.platform>linux-x86_64</fsql.platform>
+    <!-- Empty by default; the JaCoCo agent (coverage mode) fills it, and surefire's argLine below keeps it. -->
+    <argLine></argLine>
+  </properties>
+
+  <dependencies>
+    <!--
+      Druid provides these at runtime; they must not be shaded into the
+      extension JAR or the classloader will conflict with Druid's own
+      copies (druid.extensions.useExtensionClassloaderFirst defaults to
+      false, so our classes lose to Druid's on a clash).
+    -->
+    <dependency>
+      <groupId>org.apache.druid</groupId>
+      <artifactId>druid-sql</artifactId>
+      <version>${druid.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.druid</groupId>
+      <artifactId>druid-processing</artifactId>
+      <version>${druid.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.druid</groupId>
+      <artifactId>druid-server</artifactId>
+      <version>${druid.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- The built JNI shim is staged here by build-native-linux.sh (build_test.sh gate 11),
+           under native/<os>-<arch>/fractalsql-jni.<ext>, and is packaged
+           into the JAR so a Druid node can load it from its own artifact.
+
+           A SOURCE directory, not target/: "mvn clean" wipes target/,
+           and a clean would take the per-platform payloads with it.
+           leaving the JAR able to serve only the platform that happened
+           to be rebuilt afterwards. -->
+      <resource>
+        <directory>src/main/native-resources</directory>
+        <filtering>false</filtering>
+      </resource>
+    </resources>
+
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>${maven.compiler.release}</release>
+          <compilerArgs>
+            <arg>-Xlint:-options</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+        <configuration>
+          <!-- The native bridge is loaded from target/native-resources in
+               development; the packaged JAR loads it from its own
+               resource path. NativeLoader handles both.
+               The value is quoted: surefire splits argLine on spaces, and
+               a checkout path can contain them. -->
+          <argLine>@{argLine} "-Dfsql.native.path=${project.basedir}/src/main/native-resources/native/${fsql.platform}"</argLine>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.1</version>
+        <configuration>
+          <archive>
+            <manifest>
+              <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+            </manifest>
+            <manifestEntries>
+              <Druid-Extension-Name>fractalsql-druid</Druid-Extension-Name>
+              <Druid-Extension-Version>${project.version}</Druid-Extension-Version>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

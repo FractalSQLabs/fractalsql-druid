@@ -1,0 +1,237 @@
+# FractalSQL for Apache Druid -- demo stack.
+#
+#   docker compose -f docker/docker-compose.yml up -d
+#
+# A minimal Druid deployment: ZooKeeper, the coordinator-overlord, the
+# broker, the historical, the middle manager and the router, with the
+# FractalSQL extension loaded on every node.
+#
+# Why the services are separate containers: the apache/druid:38 image is
+# distroless -- it has no /usr/bin/env and no perl -- so the image's
+# own single-container "micro-quickstart" launcher (bin/supervise, a
+# perl script) cannot run in it. The services are started the way the
+# image's supervise config starts them, one container each:
+#
+#     bin/run-druid <service> conf/druid/single-server/micro-quickstart
+#
+# The extension JAR is mounted into the extensions directory. Druid's
+# ExtensionsLoader treats each loadList entry as a DIRECTORY and scans
+# it for *.jar -- so the JAR goes in a directory named after the
+# extension, not loose in extensions/.
+#
+# The seed data (docker/druid/seed) is ingested after startup by
+# scripts/ingest-demo.sh.
+#
+# Two layouts, one file:
+#
+#   single host (the default)   one fractalsqld; every Druid service mounts its socket volume.
+#   multi-host (--profile multihost)
+#                               a second broker with its own fractalsqld. Each broker mounts only
+#                               its own daemon's socket volume, which is how a real cluster is laid
+#                               out: a daemon on each host whose Druid processes call it.
+#
+#     docker compose -f docker/docker-compose.yml --profile multihost up -d
+
+x-druid-common: &druid-common
+  image: fractalsql-druid:druid
+  build:
+    context: ./druid
+    dockerfile: ${FSQL_DRUID_DOCKERFILE:-Dockerfile}
+    args:
+      DRUID_VERSION: ${FSQL_DRUID_VERSION:-38.0.0}
+  environment: &druid-env
+    DRUID_SINGLE_NODE_CONF: "micro-quickstart"
+    DRUID_XMX: "1g"
+  volumes:
+    - ./druid/common.runtime.properties:/opt/druid/conf/druid/single-server/micro-quickstart/_common/common.runtime.properties:ro
+    - ./druid/seed:/demo/seed:ro
+
+# The daemon's settings, shared by every fractalsqld in this file. The same key and provider on each
+# daemon is what a multi-host deployment looks like: each host gets the same configuration.
+x-fractalsqld-env: &fsqld-env
+  FSQL_HMAC_KEY: ${FSQL_HMAC_KEY:?set FSQL_HMAC_KEY (openssl rand -hex 32)}
+  FSQLD_REASONING_URL: ${FSQLD_REASONING_URL:-}
+  FSQLD_REASONING_MODEL: ${FSQLD_REASONING_MODEL:-}
+  FSQLD_REASONING_TOKEN: ${FSQLD_REASONING_TOKEN:-}
+  FSQLD_REASONING_ALLOW_PLAINTEXT: ${FSQLD_REASONING_ALLOW_PLAINTEXT:-}
+  FSQLD_EMBED_URL: ${FSQLD_EMBED_URL:-}
+  FSQLD_EMBED_MODEL: ${FSQLD_EMBED_MODEL:-}
+  # Reasoning effort for models that think before answering (docs/reasoning-setup.md, "Reasoning Effort"). Unset sends nothing.
+  FSQLD_THINK: ${FSQLD_THINK:-}
+  FSQLD_THINK_PROVIDER: ${FSQLD_THINK_PROVIDER:-}
+  FSQLD_THINK_NATIVE_URL: ${FSQLD_THINK_NATIVE_URL:-}
+  FSQLD_THINK_NUM_CTX: ${FSQLD_THINK_NUM_CTX:-}
+  # The chat context's answer shape: text (default), code or json.
+  FSQL_REASONING_HTTP_RESPONSE_MODE: ${FSQL_REASONING_HTTP_RESPONSE_MODE:-}
+  FSQL_REASONING_HTTP_TIMEOUT_MS: ${FSQL_REASONING_HTTP_TIMEOUT_MS:-300000}
+
+x-fractalsqld-health: &fsqld-health
+  test: ["CMD-SHELL", "fsqlctl -s /run/fractalsql/fractalsqld.sock -k /run/fractalsql/hmac.key ping"]
+  interval: 5s
+  timeout: 5s
+  retries: 20
+
+services:
+  # The reasoning, embedding and enterprise service. It serves the extension over a Unix socket, so it
+  # runs on the same host as the Druid processes that call it. Here that is one host, and the socket is
+  # shared through the fsqld_run volume. The shared HMAC key is written into that volume.
+  fractalsqld:
+    build:
+      context: ..
+      dockerfile: docker/fractalsqld/Dockerfile
+      args:
+        JAVA_VERSION: ${FSQL_JAVA_VERSION:-21}
+    image: fractalsqld:druid
+    container_name: fractalsql-druid-fractalsqld
+    restart: unless-stopped
+    environment: *fsqld-env
+    volumes:
+      - fsqld_run:/run/fractalsql
+      - fsqld_data:/var/lib/fractalsql
+    healthcheck: *fsqld-health
+
+  # A deterministic OpenAI-compatible provider, for tests. Start it with --profile test and point the
+  # daemon at it: FSQLD_REASONING_URL=http://mock-llm:18765/v1/chat/completions.
+  mock-llm:
+    profiles: ["test"]
+    image: python:3.12-alpine
+    container_name: fractalsql-druid-mock-llm
+    command: ["python3", "/mock/mock_llm.py", "18765", "/tmp/requests.log", "0.0.0.0"]
+    volumes:
+      - ../service/tests/mock_llm.py:/mock/mock_llm.py:ro
+
+  zookeeper:
+    image: zookeeper:3.9
+    container_name: fractalsql-druid-zk
+    environment:
+      ZOO_MY_ID: "1"
+      ZOO_SERVERS: "server.1=zookeeper:2888:3888;2181"
+      ZOO_4LW_COMMANDS_WHITELIST: "srvr"
+    healthcheck:
+      test: ["CMD-SHELL", "zkServer.sh status || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  coordinator-overlord:
+    <<: *druid-common
+    container_name: fractalsql-druid-coordinator
+    entrypoint: ["./bin/run-druid", "coordinator-overlord", "conf/druid/single-server/micro-quickstart"]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8081:8081"   # coordinator
+    volumes:
+      - ./druid/common.runtime.properties:/opt/druid/conf/druid/single-server/micro-quickstart/_common/common.runtime.properties:ro
+      - ./druid/seed:/demo/seed:ro
+      - druid_var:/opt/druid/var
+      - fsqld_run:/run/fractalsql
+
+  broker:
+    <<: *druid-common
+    container_name: fractalsql-druid-broker
+    restart: unless-stopped
+    entrypoint: ["./bin/run-druid", "broker", "conf/druid/single-server/micro-quickstart"]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8082:8082"
+    volumes:
+      - ./druid/common.runtime.properties:/opt/druid/conf/druid/single-server/micro-quickstart/_common/common.runtime.properties:ro
+      - ./druid/seed:/demo/seed:ro
+      - druid_var:/opt/druid/var
+      - fsqld_run:/run/fractalsql
+
+  historical:
+    <<: *druid-common
+    container_name: fractalsql-druid-historical
+    entrypoint: ["./bin/run-druid", "historical", "conf/druid/single-server/micro-quickstart"]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8083:8083"
+    volumes:
+      - ./druid/common.runtime.properties:/opt/druid/conf/druid/single-server/micro-quickstart/_common/common.runtime.properties:ro
+      - ./druid/seed:/demo/seed:ro
+      - druid_var:/opt/druid/var
+      - fsqld_run:/run/fractalsql
+
+  middlemanager:
+    <<: *druid-common
+    container_name: fractalsql-druid-middlemanager
+    entrypoint: ["./bin/run-druid", "middleManager", "conf/druid/single-server/micro-quickstart"]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    volumes:
+      - ./druid/common.runtime.properties:/opt/druid/conf/druid/single-server/micro-quickstart/_common/common.runtime.properties:ro
+      # An MSQ task takes two worker slots (controller + worker), so the
+      # stock capacity of 2 allows one task at a time and two tasks
+      # started together deadlock. See the file's own comment.
+      - ./druid/middlemanager.runtime.properties:/opt/druid/conf/druid/single-server/micro-quickstart/middleManager/runtime.properties:ro
+      - ./druid/seed:/demo/seed:ro
+      - druid_var:/opt/druid/var
+      - fsqld_run:/run/fractalsql
+
+  router:
+    <<: *druid-common
+    container_name: fractalsql-druid-router
+    entrypoint: ["./bin/run-druid", "router", "conf/druid/single-server/micro-quickstart"]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8888:8888"   # router -- the SQL endpoint
+    volumes:
+      - ./druid/common.runtime.properties:/opt/druid/conf/druid/single-server/micro-quickstart/_common/common.runtime.properties:ro
+      - ./druid/seed:/demo/seed:ro
+      - druid_var:/opt/druid/var
+      - fsqld_run:/run/fractalsql
+
+  # ---- the multi-host layout (--profile multihost) ---------------------------------------------------
+  # A second broker with a daemon of its own. broker-b mounts fsqld_run_b and nothing else from the
+  # first host's daemon, so it can reach only its own socket, as a broker on another machine would.
+  # The router finds both brokers through ZooKeeper.
+  fractalsqld-b:
+    profiles: ["multihost"]
+    image: fractalsqld:druid
+    container_name: fractalsql-druid-fractalsqld-b
+    restart: unless-stopped
+    environment:
+      <<: *fsqld-env
+      # Normally the same as the first daemon's. The gate gives it a different name so a reply shows which daemon answered.
+      FSQLD_REASONING_MODEL: ${FSQLD_REASONING_MODEL_B:-${FSQLD_REASONING_MODEL:-}}
+    volumes:
+      - fsqld_run_b:/run/fractalsql
+      - fsqld_data_b:/var/lib/fractalsql
+    healthcheck: *fsqld-health
+
+  broker-b:
+    <<: *druid-common
+    profiles: ["multihost"]
+    container_name: fractalsql-druid-broker-b
+    restart: unless-stopped
+    entrypoint: ["./bin/run-druid", "broker", "conf/druid/single-server/micro-quickstart"]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+      fractalsqld-b:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8084:8082"
+    volumes:
+      - ./druid/common.runtime.properties:/opt/druid/conf/druid/single-server/micro-quickstart/_common/common.runtime.properties:ro
+      - ./druid/seed:/demo/seed:ro
+      - druid_var_b:/opt/druid/var
+      - fsqld_run_b:/run/fractalsql
+
+volumes:
+  druid_var:
+  druid_var_b:
+  fsqld_run:
+  fsqld_run_b:
+  fsqld_data:
+  fsqld_data_b:

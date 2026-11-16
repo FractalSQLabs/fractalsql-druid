@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Daniel Gardiner d/b/a FractalSQLabs
+#
+# The LeakSanitizer suppressions for the daemon (build_test.sh --asan).
+#
+# A suppression names an allocation that is deliberately never freed: a
+# boot-time snapshot, a registry that lives until the process exits. Each
+# entry says why it is not a leak, and points at the allocation site. An
+# entry that is not needed any more is removed: the sanitizer's report
+# names the stack, and the run fails on a report that has no entry here.
+#
+# The format is LeakSanitizer's own: "leak:<pattern>", one per line, with
+# a comment above each.
+#
+# --- none yet ------------------------------------------------------------
+# The first full run under --asan with detect_leaks=1 is what fills this
+# file in: every leak the sanitizer reports is either fixed, reported as
+# a finding, or listed here with the reason it is not a leak.

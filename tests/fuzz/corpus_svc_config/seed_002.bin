@@ -1,0 +1,2 @@
+socket_path = /tmp/x.sock
+hmac_key_file = /tmp/k

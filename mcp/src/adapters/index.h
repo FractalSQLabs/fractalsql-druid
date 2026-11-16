@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0 AND BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Daniel Gardiner d/b/a FractalSQLabs
+#pragma once
+#include <vector>
+#include "../tool_registry.h"
+
+namespace fsqlmcp
+{
+    class Db;
+    // The index tier: the native IVF index and the indexed search.
+    std::vector<ToolSpec> buildIndexTools( Db& db );
+}

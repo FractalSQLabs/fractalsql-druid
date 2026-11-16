@@ -1,0 +1,182 @@
+name: build-test
+
+# The validation gates of build_test.sh. A local run and a CI run are the same run:
+#   quick   the gates that need no Docker (daemon, extension, MCP): every push and pull request
+#   stack   the Druid cluster in Docker with a mock provider: weekly, on demand, and on release branches
+
+on:
+  push:
+    branches: [main, '2.x']
+  pull_request:
+    branches: [main, '2.x']
+  schedule:
+    - cron: '30 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      gates:
+        description: 'Comma-separated gate numbers to run (empty = the default set for the job)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quick:
+    name: quick gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    env:
+      JAVA_HOME: /usr/lib/jvm/temurin-21-jdk-${{ matrix.os == 'ubuntu-24.04-arm' && 'arm64' || 'amd64' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev libcurl4 python3 maven unzip
+          # The runner image carries Temurin 21 under JAVA_HOME_21_*; fall back to it if the path above is absent.
+          if [ ! -d "$JAVA_HOME" ]; then
+            if [ -n "${JAVA_HOME_21_X64:-}" ]; then echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV";
+            elif [ -n "${JAVA_HOME_21_ARM64:-}" ]; then echo "JAVA_HOME=$JAVA_HOME_21_ARM64" >> "$GITHUB_ENV"; fi
+          fi
+          java -version
+
+      - name: Gates (no Docker)
+        run: chmod +x build_test.sh && ./build_test.sh --no-docker ${{ github.event.inputs.gates && format('--gate {0}', github.event.inputs.gates) || '' }}
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: gate-logs-${{ matrix.os }}
+          path: |
+            /tmp/fsql-druid-test.*/**/*.log
+            /tmp/fsql-druid-test.*/**/*.out
+          if-no-files-found: ignore
+
+  native:
+    # The C daemon and the MCP server under sanitizers, fuzzing, fault injection, valgrind and coverage. All of it runs against the build_test
+    # mock provider: no model endpoint is needed.
+    name: native (${{ matrix.flag }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        flag: ['--asan', '--ubsan', '--tsan', '--fault', '--fuzz', '--profile', '--coverage']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev libcurl4 python3 maven unzip rsync valgrind lcov clang-18 libc++-18-dev
+          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+
+      - name: Run
+        run: chmod +x build_test.sh && ./build_test.sh ${{ matrix.flag }}
+
+  versions:
+    # The extension is Java 17 bytecode and supports Druid 37 and 38 on Java 21 and 25: compile it against each Druid and run its tests
+    # on each JDK. (Druid 37's image runs Java 17, which the stack job below exercises.)
+    name: Druid ${{ matrix.druid }} on Java ${{ matrix.java }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        druid: ['37.0.0', '38.0.0']
+        java: ['21', '25']
+    env:
+      FSQL_DRUID_VERSION: ${{ matrix.druid }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev python3 maven unzip
+          JH="JAVA_HOME_${{ matrix.java }}_X64"; echo "JAVA_HOME=${!JH}" >> "$GITHUB_ENV"
+
+      - name: Extension gate
+        run: chmod +x build_test.sh && ./build_test.sh --no-docker --gate 11
+
+  macos:
+    # Druid runs on macOS, so the extension ships a macOS payload: build it and run the extension tests against it. The cluster gates need
+    # Docker and stay on Linux.
+    name: extension gates (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15,       java_home: JAVA_HOME_21_arm64 }
+          - { runner: macos-15-intel, java_home: JAVA_HOME_21_X64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Select Java 21
+        run: |
+          JH="${{ matrix.java_home }}"; J="${!JH:-}"
+          [ -n "$J" ] || J="$(/usr/libexec/java_home -v 21)"
+          echo "JAVA_HOME=$J" >> "$GITHUB_ENV"
+          mvn -v || brew install maven
+
+      - name: Extension gate
+        run: chmod +x build_test.sh && ./build_test.sh --no-docker --gate 11
+
+  stack:
+    name: stack gates (Druid ${{ matrix.druid }}, Docker, mock provider)
+    # The cluster takes several minutes to build and start: not on every pull request.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        druid: ['38.0.0', '37.0.0']
+    env:
+      FSQL_DRUID_VERSION: ${{ matrix.druid }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev python3 maven unzip
+          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+
+      - name: Build the extension and the daemon
+        run: chmod +x build_test.sh && ./build_test.sh --no-docker --gate 01,02,11,12
+
+      - name: Stack gates
+        run: chmod +x build_test.sh && ./build_test.sh --gate 20,21,22,23,24,25,28
+
+      - name: Collect container logs
+        if: failure()
+        run: |
+          mkdir -p stack-logs
+          for c in $(docker ps -a --format '{{.Names}}'); do docker logs "$c" > "stack-logs/$c.log" 2>&1 || true; done
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: stack-logs-${{ matrix.druid }}
+          path: stack-logs
+          if-no-files-found: ignore

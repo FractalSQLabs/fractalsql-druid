@@ -1,0 +1,78 @@
+# The accepted static-analysis findings: tool | file | check | count | the reason it is accepted.
+#
+# One line per (tool, file, check); the count is how many findings of that kind are accepted.
+# Every line here has been read: a finding is accepted only because the code at that place is
+# what the reason says it is. "Too many to look at" is not a reason.
+#
+# A finding that is not in this file fails the analysis run (a NEW finding), and so does a line
+# here the tools report more often than the count accepts. A line the run reports less often, or
+# not at all, is STALE: the run reports it, so the line can be trimmed, but the run still passes.
+# The count is a budget rather than a measurement because the tools do not report the same
+# findings on every platform: clang-tidy's va_list check fires on x86_64 and not on aarch64.
+#
+# The tools and their check sets are described in tests/analysis/README.md.
+#
+# --- gcc -fanalyzer ------------------------------------------------------
+# The three "leak of 'nb'" findings are the same pattern in three files: a buffer that grows with
+# realloc. When the realloc fails, the old buffer stays in the struct and the function returns
+# false; the buffer is freed by the function's own deinit. The analyzer cannot see that the
+# struct still owns it, so it reports the old block as leaked. Read and accepted as false
+# positives.
+gcc-fanalyzer | service/adapter/src/fractalsql.c | -Wanalyzer-malloc-leak | 1 | false positive: the realloc keeps the old buffer in the struct, and the struct's deinit frees it
+gcc-fanalyzer | service/adapter/src/fractalsql_config_udf.c | -Wanalyzer-malloc-leak | 1 | false positive: the realloc keeps the old buffer in the struct, and the struct's deinit frees it
+gcc-fanalyzer | service/adapter/src/fractalsql_vector.c | -Wanalyzer-malloc-leak | 1 | false positive: the realloc keeps the old buffer in the struct, and the struct's deinit frees it
+#
+# --- clang-tidy ----------------------------------------------------------
+# The C daemon's and the CLI's own copies of the calling convention: an argument of type INT or
+# REAL is passed as a pointer to eight raw bytes, and the body reads them back through that
+# pointer. The cast is the convention itself, and it is what the daemon does when it stores the
+# value (the same eight bytes, the same pointer).
+clang-tidy | service/adapter/src/fractalsql.c | bugprone-implicit-widening-of-multiplication-result | 8 | accepted: the products are buffer sizes whose operands are bounded well below the overflow range, and the files that need it check the product explicitly (mul_ok)
+clang-tidy | service/adapter/src/fractalsql_config_udf.c | bugprone-implicit-widening-of-multiplication-result | 1 | accepted: the product is a buffer size whose operands are bounded well below the overflow range
+clang-tidy | service/adapter/src/fractalsql_enterprise.c | bugprone-implicit-widening-of-multiplication-result | 13 | accepted: the products are buffer sizes whose operands are bounded well below the overflow range, and the files that need it check the product explicitly (mul_ok)
+clang-tidy | service/adapter/src/fractalsql_session.c | bugprone-implicit-widening-of-multiplication-result | 1 | accepted: the product is a buffer size whose operands are bounded well below the overflow range
+clang-tidy | service/adapter/src/fractalsql_vector.c | bugprone-implicit-widening-of-multiplication-result | 2 | accepted: the product is a buffer size whose operands are bounded well below the overflow range
+# The config parser copies a value into a fixed buffer, but only after it has compared the
+# value's length with the buffer's size (the CFG_SET_STR macro).
+clang-tidy | service/daemon/fractalsqld.c | clang-analyzer-security.insecureAPI.strcpy | 17 | accepted: the length is checked against the destination's size before every copy (the CFG_SET_STR macro, and the socket path's own check)
+clang-tidy | service/cli/fsqlctl.c | clang-analyzer-security.insecureAPI.strcpy | 1 | accepted: the socket path's length is compared with sun_path's size before the copy
+# The CLI's socket path: the environment variable is read and then defaulted, so it is never
+# NULL when connect_daemon() is called.
+clang-tidy | service/cli/fsqlctl.c | clang-analyzer-core.NonNullParamChecker | 1 | accepted: the socket path defaults to DEFAULT_SOCKET when the environment variable is unset, so it is never NULL
+# The redactor's output buffer: when there is anything to copy, the buffer has just been grown,
+# so it is not NULL.
+clang-tidy | service/adapter/src/fsql_audit_redact.h | clang-analyzer-core.NonNullParamChecker | 1 | accepted: the buffer is grown before anything is copied into it, so it is not NULL there
+# The logger's own vsnprintf: the va_list is started right before the call.
+clang-tidy | service/daemon/fractalsqld.c | clang-analyzer-valist.Uninitialized | 1 | accepted: the va_list is started immediately before the call
+clang-tidy | service/adapter/src/fractalsql_enterprise.c | clang-analyzer-valist.Uninitialized | 1 | accepted: the va_list is started immediately before the call
+clang-tidy | service/adapter/src/fractalsql_index.c | clang-analyzer-valist.Uninitialized | 1 | accepted: the va_list is started immediately before the call
+# The fatal-signal handler formats its line with snprintf, which is not async-signal-safe.
+# The finding is real: a signal that interrupts snprintf's own malloc can deadlock. The handler
+# runs once, on a fatal signal, and writes with write(2) afterwards, so the window is small.
+# Reported as a finding rather than fixed (see the completion report).
+# The versioned comment scan and the INTO OUTFILE scan both read the statement's bytes; the
+# statement's length is what bounds them.
+# The CSV mirror's path: the base path's length is compared with the buffer's size, and the
+# suffix is copied with its NUL, so the result IS a terminated string.
+clang-tidy | service/adapter/src/fractalsql_enterprise.c | bugprone-not-null-terminated-result | 1 | accepted: the copy is of a literal that includes the NUL, and the length check leaves room for it
+# A macro argument that is not parenthesised. The macro's argument is a plain expression here.
+clang-tidy | service/adapter/src/fractalsql_enterprise.c | bugprone-macro-parentheses | 1 | accepted: the macro's argument is an expression with no operator at its top level
+# The corpus parser's separator chain has two branches with the same body on purpose (the
+# bracketed and the unbracketed row separator).
+clang-tidy | service/adapter/src/fractalsql_parse.c | bugprone-branch-clone | 1 | accepted: the two branches are the bracketed and the unbracketed form of the same separator
+# The CLI's switch has two commands that do the same thing.
+clang-tidy | service/cli/fsqlctl.c | bugprone-branch-clone | 1 | accepted: the two commands are aliases and deliberately do the same thing
+# The feature-test macros are macros: naming them is the only way to ask for them.
+clang-tidy | service/daemon/fractalsqld.c | bugprone-reserved-identifier | 1 | accepted: the feature-test macro is how a POSIX program asks for the GNU extensions
+clang-tidy | service/cli/fsqlctl.c | bugprone-reserved-identifier | 1 | accepted: the feature-test macro is how a POSIX program asks for the POSIX extensions
+#
+# --- cppcheck ------------------------------------------------------------
+# The calling convention again: an argument of type REAL is passed as a pointer to eight raw
+# bytes, and the body reads them back through that pointer. The cast is the convention.
+cppcheck | service/adapter/src/fractalsql.c | invalidPointerCast | 3 | accepted: the calling convention: a REAL argument is eight raw bytes behind a char pointer
+cppcheck | service/adapter/src/fractalsql_enterprise.c | invalidPointerCast | 4 | accepted: the calling convention: a REAL argument is eight raw bytes behind a char pointer
+cppcheck | service/adapter/src/fractalsql_vector.c | invalidPointerCast | 2 | accepted: the calling convention: a REAL argument is eight raw bytes behind a char pointer
+clang-tidy | service/adapter/src/fractalsql_enterprise.c | clang-analyzer-optin.performance.Padding | 1 | accepted: ledger_head_rec_t has 8 bytes of padding; a small struct that is built once per head write, not on a hot path (clang-tidy 18 names the check; version 14 left it unnamed)
+clang-tidy | service/daemon/fractalsqld.c | clang-analyzer-optin.performance.Padding | 2 | accepted: the padding is a few bytes on two small structs that are not on a hot path
+clang-tidy | service/daemon/fractalsqld.c | bugprone-multi-level-implicit-pointer-conversion | 3 | accepted: a char ** is passed to free() and memset() and the calloc result is stored into one; the C library's parameters are void *, and the pointer types on both sides are the intended ones
+clang-tidy | service/daemon/fractalsqld.c | bugprone-assignment-in-if-condition | 1 | accepted: the cache lookup's result is assigned and compared with NULL explicitly in the same condition

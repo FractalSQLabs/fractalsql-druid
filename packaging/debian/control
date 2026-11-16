@@ -1,0 +1,19 @@
+Package: fractalsql-druid
+Version: @VERSION@
+Section: database
+Priority: optional
+Architecture: @ARCH@
+Depends: default-jre-headless (>= 2:1.17) | java17-runtime-headless | java21-runtime-headless | java25-runtime-headless, libcurl4, libssl3
+Maintainer: FractalSQLabs <ops@fractalsqlabs.io>
+Homepage: https://github.com/FractalSQLabs/fractalsql-druid
+Description: FractalSQL for Apache Druid: the extension, fractalsqld and the MCP server
+ The Druid extension JAR (SQL functions, the FRACTAL_SEARCH aggregate and the /fractalsql
+ service endpoints), fractalsqld (the reasoning, embedding and enterprise service that runs
+ beside the Druid brokers), and fractalsql-druid-mcp (a Model Context Protocol server for
+ Druid).
+ .
+ After installation: copy /usr/lib/fractalsql-druid/extensions/fractalsql-druid into
+ Druid's extensions directory, add "fractalsql-druid" to druid.extensions.loadList, edit
+ /etc/fractalsql/fractalsqld.conf (the signing key, /etc/fractalsql/hmac.key, is created on
+ install), and start the service: systemctl enable --now fractalsqld. How to start the MCP
+ server: /usr/share/doc/fractalsql-druid/mcp/RUN.txt.

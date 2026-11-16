@@ -1,0 +1,23 @@
+# fractalsqld.conf: the reasoning, embedding and enterprise service for Apache Druid.
+# Copy to /etc/fractalsql/fractalsqld.conf. The file holds credentials: keep it readable only by the
+# fractalsql user (mode 0640). Apply edits without a restart with:  fsqlctl reload
+
+# How the Druid extension reaches the service. The key file holds the shared signing key as hex
+# (openssl rand -hex 32) and must match druid.fractalsql.daemon_hmac_key_file.
+socket_path   = /run/fractalsql/fractalsqld.sock
+hmac_key_file = /etc/fractalsql/hmac.key
+# User ids allowed to connect: the user that runs Druid.
+allowed_uids  = 1000
+
+# The model provider. Uncomment and set your endpoint; see docs/reasoning-setup.md for Bedrock, Azure
+# OpenAI, Vertex AI and local runtimes.
+#reasoning_plugin = /usr/lib/fractalsql-druid/fractalsqld/fractalsql-reasoning-http.so
+#reasoning_url    = https://api.openai.com/v1/chat/completions
+#reasoning_token  = sk-...
+#reasoning_model  = gpt-4o-mini
+#embed_url        = https://api.openai.com/v1/embeddings
+#embed_model      = text-embedding-3-small
+
+# The enterprise tier (licensed): the library and the chain file.
+#enterprise_lib         = /usr/lib/fractalsql-druid/fractalsqld/enterprise/libfractalsql-enterprise-sovereign-c.so
+#enterprise_ledger_path = /var/lib/fractalsql/fractalsql_ledger.dat

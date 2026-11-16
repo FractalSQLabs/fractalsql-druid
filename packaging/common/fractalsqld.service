@@ -1,0 +1,20 @@
+[Unit]
+Description=fractalsqld: reasoning, embedding and enterprise service for FractalSQL on Apache Druid
+After=network.target
+
+[Service]
+Type=simple
+User=fractalsql
+Group=fractalsql
+RuntimeDirectory=fractalsql
+StateDirectory=fractalsql
+ExecStart=/usr/bin/fractalsqld -c /etc/fractalsql/fractalsqld.conf
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

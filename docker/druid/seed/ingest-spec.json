@@ -1,0 +1,74 @@
+{
+  "type": "index_parallel",
+  "spec": {
+    "ioConfig": {
+      "type": "index_parallel",
+      "inputSource": {
+        "type": "local",
+        "baseDir": "/demo/seed",
+        "inputFormat": {
+          "type": "json"
+        },
+        "inputParser": {
+          "type": "json",
+          "flattenColumns": true,
+          "parseRow": {
+            "path": "!",
+            "type": "json"
+          }
+        },
+        "paths": [
+          "demo_vecs.json"
+        ],
+        "filter": "demo_vecs.json"
+      },
+      "inputFormat": {
+        "type": "json"
+      },
+      "inputParser": {
+        "type": "json",
+        "flattenColumns": true,
+        "parseRow": {
+          "path": "!",
+          "type": "json"
+        }
+      },
+      "appendToExisting": false
+    },
+    "tuningConfig": {
+      "type": "index_parallel",
+      "appendToExisting": false,
+      "partitionsSpec": {
+        "type": "dynamic",
+        "maxRowsPerSegment": 5000000,
+        "maxNumConcurrentSubTasks": 1
+      }
+    },
+    "dataSchema": {
+      "dataSource": "demo_vecs",
+      "timestampSpec": {
+        "column": "ts",
+        "format": "iso",
+        "missingValue": ""
+      },
+      "dimensionsSpec": {
+        "useSchemaDiscovery": true,
+        "dimensions": [
+          "id",
+          "grp"
+        ],
+        "arrayIngestMode": "array"
+      },
+      "granularitySpec": {
+        "type": "uniform",
+        "segmentGranularity": "DAY",
+        "queryGranularity": "none",
+        "rollup": false
+      },
+      "transformSpec": {
+        "transforms": [],
+        "outputGranularity": "DAY"
+      }
+    }
+  }
+}

@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: Apache-2.0 AND BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Daniel Gardiner d/b/a FractalSQLabs
+#pragma once
+#include <optional>
+#include <set>
+#include <string>
+#include <functional>
+#include <unordered_map>
+#include <unordered_set>
+#include <mutex>
+#include "mcp_json.h"
+#include "tool_registry.h"
+#include "concurrency.h"
+#include "rows.h"
+#include <atomic>
+#include "logging.h"
+
+namespace fsqlmcp
+{
+    // Which protocol era a request belongs to. The modern era (MCP revision
+    // 2026-07-28) is stateless: every request carries its own metadata and
+    // there is no protocol session. The legacy era (2024-11-05 .. 2025-11-25)
+    // keeps the initialize handshake and the Mcp-Session-Id header.
+    enum class ProtocolEra { Legacy, Modern };
+
+    // Per-request options the transport fills in and the dispatch core reads.
+    struct CallOptions
+    {
+        ProtocolEra era = ProtocolEra::Legacy;
+        // The context handle this request runs under (the modern era's
+        // explicit per-client state handle). Empty in the legacy era, where
+        // the protocol session supplies the context.
+        std::string contextId;
+        // The presenting credential's tool allowlist; unset means every tool.
+        std::optional<std::set<std::string>> toolAllow;
+    };
+
+    struct ServerConfig
+    {
+        std::string serverName    = "fractalsql-mcp";
+        std::string serverVersion = "0.0.0";
+        RowLimitConfig rowLimits;
+        // 15.4's deployment-wide kill switch (FSQL_MCP_READ_ONLY): refuse every
+        // destructive call before it reaches the adapter layer.
+        bool readOnlyMode = false;
+        // FSQL_MCP_PROTOCOL_ERA=modern: refuse the legacy handshake outright
+        // and answer GET/DELETE with 405 for every request.
+        bool modernOnly = false;
+    };
+
+    // Transport-agnostic dispatch core, called identically from
+    // transport_stdio.cpp (per-line) and transport_http.cpp (per-POST-body).
+    class JsonRpcServer
+    {
+    public:
+        JsonRpcServer( ServerConfig cfg, std::vector<ToolSpec> tools, ConcurrencyConfig concCfg );
+
+        // Returns std::nullopt for a notification or a cancelled-and-discarded call.
+        std::optional<std::string> handleLine( const std::string& line, const std::string& clientKey );
+        std::optional<std::string> handleLine( const std::string& line, const std::string& clientKey,
+                                               const CallOptions& opts );
+
+        // notifications/cancelled side effect: flags the id AND interrupts the
+        // session's engine statement (a no-op here: an in-flight HTTP call ends when its
+        // socket times out).
+        void cancel( const std::string& requestId );
+        void beginShutdown();
+        bool isShuttingDown() const { return shuttingDown_; }
+        std::size_t activeRequestCount() { return active_.load(); }
+
+        const std::vector<ToolSpec>& tools() const { return tools_; }
+
+        // Wired by each engine's main(): interrupts the in-flight statement on
+        // the connection owning the given client/session key (13.4.3's cancel
+        // path: a no-op here). Receives the client key because only the dispatch layer
+        // maps a request id to its session.
+        std::function<void( const std::string& clientKey )> interruptHook;
+
+    private:
+        std::optional<std::string> dispatch( const Json& req, const std::string& clientKey, const CallOptions& opts );
+        Json handleInitialize( const Json& params );
+        Json handleServerDiscover();
+        Json handleToolsList( const CallOptions& opts );
+        Json handleToolsCall( const Json& params, const std::string& clientKey, const std::string& requestId,
+                              const CallOptions& opts );
+        Json handleResourcesList();
+        Json handleResourcesRead( const Json& params );
+        Json handlePromptsList();
+        Json handlePromptsGet( const Json& params );
+
+        ServerConfig cfg_;
+        std::vector<ToolSpec> tools_;
+        std::unordered_map<std::string, const ToolSpec*> byName_;
+        ConcurrencyManager conc_;
+        std::mutex inflightMu_;
+        std::unordered_map<std::string, std::string> inflightSessions_; // request id -> client key
+        std::unordered_set<std::string> cancelledIds_;
+        // Written by the main thread (beginShutdown(), once, at shutdown)
+        // and read by every per-connection thread's own isShuttingDown()
+        // check on each request -- a plain bool here is a genuine data
+        // race (confirmed by TSan against a fully -fsanitize=thread-
+        // instrumented build of this binary, not just the default LD_
+        // PRELOAD-only runtime-interception setup the smoke tests use,
+        // which can miss races expressed through inline atomic/plain
+        // loads in code it never compiled with instrumentation).
+        std::atomic<bool> shuttingDown_{ false };
+        std::atomic<std::size_t> active_{ 0 };
+    };
+}

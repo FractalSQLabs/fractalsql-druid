@@ -1,0 +1,16 @@
+BC_IMPOSSIBLE_INSTANCEOF com.fractalsqlabs.fractalsql.druid.FractalOperatorConversion
+CT_CONSTRUCTOR_THROW com.fractalsqlabs.fractalsql.druid.FractalSqlConfig
+DE_MIGHT_IGNORE com.fractalsqlabs.fractalsql.druid.FractalSqlIndex
+DLS_DEAD_LOCAL_STORE com.fractalsqlabs.fractalsql.druid.FractalSqlAgents
+EI_EXPOSE_REP com.fractalsqlabs.fractalsql.druid.FractalSearchAggregatorFactory
+EI_EXPOSE_REP com.fractalsqlabs.fractalsql.druid.FractalSqlService
+EI_EXPOSE_REP2 com.fractalsqlabs.fractalsql.druid.FractalSearchAggregatorFactory
+EI_EXPOSE_REP2 com.fractalsqlabs.fractalsql.druid.FractalSqlAgents
+EI_EXPOSE_REP2 com.fractalsqlabs.fractalsql.druid.FractalSqlResource
+EI_EXPOSE_REP2 com.fractalsqlabs.fractalsql.druid.FractalSqlVectorizer
+RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE com.fractalsqlabs.fractalsql.druid.FractalJson
+REC_CATCH_EXCEPTION com.fractalsqlabs.fractalsql.druid.FractalExpr
+REC_CATCH_EXCEPTION com.fractalsqlabs.fractalsql.druid.FractalJson
+REC_CATCH_EXCEPTION com.fractalsqlabs.fractalsql.druid.FractalSqlAgents
+REC_CATCH_EXCEPTION com.fractalsqlabs.fractalsql.druid.FractalSqlIndex
+UPM_UNCALLED_PRIVATE_METHOD com.fractalsqlabs.fractalsql.druid.FractalSqlAgents

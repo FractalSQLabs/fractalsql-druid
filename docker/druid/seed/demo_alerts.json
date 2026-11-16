@@ -1,0 +1,10 @@
+{"ts": "2026-11-10T05:50:49Z", "service": "api-gateway", "message": "request latency p99 245ms", "severity": "info"}
+{"ts": "2026-11-10T05:55:49Z", "service": "api-gateway", "message": "request latency p99 260ms", "severity": "info"}
+{"ts": "2026-11-10T06:00:49Z", "service": "payments", "message": "transaction processed successfully", "severity": "info"}
+{"ts": "2026-11-10T06:05:49Z", "service": "payments", "message": "transaction processed successfully", "severity": "info"}
+{"ts": "2026-11-10T06:15:49Z", "service": "auth-service", "message": "3 failed login attempts, user_id=8821", "severity": "warning"}
+{"ts": "2026-11-10T06:16:49Z", "service": "auth-service", "message": "3 failed login attempts, user_id=8821", "severity": "warning"}
+{"ts": "2026-11-10T06:17:49Z", "service": "auth-service", "message": "17 failed login attempts, user_id=8821", "severity": "warning"}
+{"ts": "2026-11-10T06:25:49Z", "service": "payments", "message": "transaction processed successfully", "severity": "info"}
+{"ts": "2026-11-10T06:35:49Z", "service": "api-gateway", "message": "request latency p99 4200ms", "severity": "critical"}
+{"ts": "2026-11-10T06:36:49Z", "service": "api-gateway", "message": "request latency p99 3900ms", "severity": "critical"}
