@@ -111,7 +111,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.2.5</version>
+        <version>3.6.1</version>
         <configuration>
           <!-- The native bridge is loaded from target/native-resources in
                development; the packaged JAR loads it from its own
