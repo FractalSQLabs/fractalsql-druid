@@ -37,7 +37,7 @@ public class FractalSqlCore {
      * Runs a call on the node's context with the context locked. The core documents its context as not thread-safe (it
      * mutates the monitor's state, and a result stays valid only until the next call on the same context), and one
      * context serves every query thread on the node: two concurrent diversify calls would otherwise race
-     * (SECURITY_AUDIT.md 3.4). The state is deliberately node-wide, so a lock, not a context per thread, is the faithful fix.
+     * The state is deliberately node-wide, so a lock, not a context per thread, is the faithful fix.
      */
     public <T> T locked(java.util.function.LongFunction<T> call)
     {

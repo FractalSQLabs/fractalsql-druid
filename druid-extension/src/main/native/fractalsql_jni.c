@@ -535,6 +535,18 @@ Java_com_fractalsqlabs_fractalsql_druid_Native_cycleDetect(
     return (*env)->NewStringUTF(env, buf);
 }
 
+/* The objective FRACTAL_OPTIMIZE_SUBSET maximises: sum(weight[i] * item_value[i]). The core's search minimises, so this is the negated sum. */
+static double
+fsql_jni_subset_value_objective(const double *weights, size_t n, void *ctx)
+{
+    const double *item_values = (const double *)ctx;
+    double sum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        sum += weights[i] * item_values[i];
+    }
+    return -sum;
+}
+
 JNIEXPORT jdouble JNICALL
 Java_com_fractalsqlabs_fractalsql_druid_Native_callFn(
     JNIEnv *env, jclass cls,
@@ -702,6 +714,26 @@ Java_com_fractalsqlabs_fractalsql_druid_Native_callFn(
                         for (size_t i = 0; i < n_assets; i++) {
                             if ((jsize)(1 + i) < outLen) { out[1 + i] = weights[i]; }
                         }
+                    }
+                    free(weights);
+                }
+            }
+            break;
+        }
+        case 77: { /* fractal_optimize_subset(item_values, upper_bounds, k, prev_weights, turnover_penalty, seed) */
+            size_t n_items = (size_t)aLen;
+            /* the weights come back in out[1..n]: at most outLen - 1 items */
+            if (a && b && n_items > 0 && (size_t)bLen == n_items && (jsize)(n_items + 1) <= outLen
+                    && (!c || cLen <= 0 || (size_t)cLen == n_items)) {
+                double *weights = (double *)calloc(n_items, sizeof(double));
+                if (weights) {
+                    double score = 0.0;
+                    rc = fsql_optimize_subset(fsql_jni_subset_value_objective, (void *)a, n_items, (size_t)p1, NULL, b,
+                                              (c && cLen > 0) ? c : NULL, p2, (uint64_t)p3, weights, &score);
+                    result = -score;   /* the achieved value-weighted sum (higher is better) */
+                    if (out) {
+                        out[0] = (double)n_items;
+                        for (size_t i = 0; i < n_items; i++) { out[1 + i] = weights[i]; }
                     }
                     free(weights);
                 }

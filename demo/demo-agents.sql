@@ -495,7 +495,7 @@ FROM "ag_patient";
 -- ]};
 
 REPLACE INTO ag_refined OVERWRITE ALL
-SELECT fractal_json_text(fractal_search_debug('0.8,0.1,0,0,0.1', 30, 50, 2), '$.best_point') AS "v"
+SELECT fractal_json_text(fractal_sfs_converge_debug('0.8,0.1,0,0,0.1', 30, 50, 2), '$.best_point') AS "v"
 FROM UNNEST(ARRAY[1]) AS t(x)
 PARTITIONED BY ALL;
 

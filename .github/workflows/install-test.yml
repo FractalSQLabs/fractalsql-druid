@@ -194,7 +194,8 @@ jobs:
           test -x /usr/local/bin/fractalsqld && test -x /usr/local/bin/fsqlctl
           test -f /usr/local/bin/.mcp-schema-lock
           /usr/local/bin/fractalsql-druid-mcp --version
-          test "$(/usr/local/bin/fractalsql-druid-mcp --list-tools | wc -l | tr -d ' ')" -eq 78
+          WANT="$(python3 -c "import json; print(len(json.load(open('mcp/manifest.json'))['tools']))")"
+          test "$(/usr/local/bin/fractalsql-druid-mcp --list-tools | wc -l | tr -d ' ')" -eq "${WANT}"
           out="$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | DRUID_URL=http://127.0.0.1:1 /usr/local/bin/fractalsql-druid-mcp 2>&1 || true)"
           echo "$out" | grep -q schema_lock_ok
           sudo scripts/easy_install.sh --uninstall --yes --druid-home /tmp/druid

@@ -207,12 +207,21 @@ public class FractalExprSweepTest {
     @Test
     void searchDebugAppliesDefaultsAndRejectsBadQueries()
     {
-        good(call("FRACTAL_SEARCH_DEBUG", true, "[1,0,0]", 5, 8, 2));
-        good(call("FRACTAL_SEARCH_DEBUG", true, "[1,0,0]", null, null, null));
-        bad(call("FRACTAL_SEARCH_DEBUG", true, "garbage", 5, 8, 2));
-        bad(call("FRACTAL_SEARCH_DEBUG", true, null, 5, 8, 2));
+        good(call("FRACTAL_SFS_CONVERGE_DEBUG", true, "[1,0,0]", 5, 8, 2));
+        good(call("FRACTAL_SFS_CONVERGE_DEBUG", true, "[1,0,0]", null, null, null));
+        bad(call("FRACTAL_SFS_CONVERGE_DEBUG", true, "garbage", 5, 8, 2));
+        // the plain convergence function: the same search without the trace
+        good(call("FRACTAL_SFS_CONVERGE", true, "[1,0,0]", 5, 8, 2));
+        good(call("FRACTAL_SFS_CONVERGE", true, "[1,0,0]", null, null, null));
+        // the value-weighted k-subset allocation: values, upper bounds, k, optional previous weights, turnover penalty and seed
+        good(call("FRACTAL_OPTIMIZE_SUBSET", true, "[0.9,0.1,0.5,0.8]", "[0.6,0.6,0.6,0.6]", 2, null, null, 3));
+        good(call("FRACTAL_OPTIMIZE_SUBSET", true, "[0.9,0.1,0.5,0.8]", "[0.6,0.6,0.6,0.6]", 2, "[0.25,0.25,0.25,0.25]", 0.1, 3));
+        ok(call("FRACTAL_OPTIMIZE_SUBSET", true, "garbage", "[0.6]", 1, null, null, null));
+        bad(call("FRACTAL_OPTIMIZE_SUBSET", true, "[0.9,0.1,0.5,0.8]", "[0.1,0.1,0.1,0.1]", 2, null, null, 3));   // bounds that cannot sum to 1
+        bad(call("FRACTAL_SFS_CONVERGE", true, "garbage", 5, 8, 2));
+        bad(call("FRACTAL_SFS_CONVERGE_DEBUG", true, null, 5, 8, 2));
         // a bad parameter makes the core refuse and the failure carry its detail
-        ok(call("FRACTAL_SEARCH_DEBUG", true, "[1,0,0]", -5, -5, -5));
+        ok(call("FRACTAL_SFS_CONVERGE_DEBUG", true, "[1,0,0]", -5, -5, -5));
     }
 
     // -- session tier ---------------------------------------------------------
@@ -266,7 +275,7 @@ public class FractalExprSweepTest {
     {
         good(call("FRACTAL_CYCLE_DETECT", true, "[\"0011223344556677\",\"0011223344556677\",\"0011223344556677\"]", 64, 3));
         good(call("FRACTAL_CYCLE_DETECT", true, "[\"0011223344556677\",\"ffffffffffffffff\"]", null, null));
-        // a fingerprint whose length is not the width's byte count is refused (SECURITY_AUDIT.md 3.2)
+        // a fingerprint whose length is not the width's byte count is refused
         bad(call("FRACTAL_CYCLE_DETECT", true, "[\"00\",\"ff\"]", null, null));
         bad(call("FRACTAL_CYCLE_DETECT", true, "[\"00\"]", 64, 3));
         good(call("FRACTAL_CYCLE_DETECT", true, null, 64, 3));

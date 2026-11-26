@@ -62,6 +62,8 @@ public class FractalSqlDruidModule implements DruidModule {
         binder.bind(FractalSqlCore.class);
         // The vectorizer tier: the registry and the queue.
         binder.bind(FractalSqlVectorizer.class);
+        // The index tier: the IVF index and the datasource that holds it.
+        binder.bind(FractalSqlIndex.class);
         // The enterprise tier: the QTL ledger and the CISO audit.
         binder.bind(FractalSqlEnterprise.class);
 

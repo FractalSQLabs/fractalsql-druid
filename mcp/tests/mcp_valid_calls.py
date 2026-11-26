@@ -79,7 +79,7 @@ TABLE = [
     ("fractal_vector_quantize_int8", {"vector": [0.5, -0.5, 0.25]}), ("fractal_vector_quantize_binary", {"vector": [0.5, -0.5]}),
     ("fractal_vector_hamming_distance", {"a": "0f0f0f0f", "b": "f0f0f0f0"}),
     ("fractal_vector_lp_distance", {"a": [0, 0], "b": [3, 4], "p": 1}),
-    ("fractal_search_debug", {"corpus": [0, 0, 1, 1, 2, 2, 3, 3], "query": [1, 1], "k": 2}),
+    ("fractal_sfs_converge_debug", {"corpus": [0, 0, 1, 1, 2, 2, 3, 3], "query": [1, 1], "k": 2}),
     ("fractal_search_explore", {"table_name": "t", "vector_col": "emb", "query": [1, 1]}),
     ("fractal_ledger_verify", {}), ("fractal_ledger_truth_count", {}),
 ]

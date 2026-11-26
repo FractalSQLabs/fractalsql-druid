@@ -52,13 +52,16 @@ public class FractalExpr extends ExprMacroTable.BaseMacroFunctionExpr {
     private final FractalSqlEnterprise enterprise;
     private final FractalSqlDaemon daemon;
 
+    /** The index tier, for the IVF index and the indexed search. */
+    private final FractalSqlIndex index;
+
     FractalExpr(
             ExprMacroTable.ExprMacro macro,
             FractalFn.Spec spec,
             List<Expr> args,
             ReasoningBridge bridge)
     {
-        this(macro, spec, args, bridge, null, null, null, null, null);
+        this(macro, spec, args, bridge, null, null, null, null, null, null);
     }
 
     FractalExpr(
@@ -72,8 +75,24 @@ public class FractalExpr extends ExprMacroTable.BaseMacroFunctionExpr {
             FractalSqlEnterprise enterprise,
             FractalSqlDaemon daemon)
     {
+        this(macro, spec, args, bridge, config, sessions, core, enterprise, daemon, null);
+    }
+
+    FractalExpr(
+            ExprMacroTable.ExprMacro macro,
+            FractalFn.Spec spec,
+            List<Expr> args,
+            ReasoningBridge bridge,
+            FractalSqlConfig config,
+            FractalSqlSessions sessions,
+            FractalSqlCore core,
+            FractalSqlEnterprise enterprise,
+            FractalSqlDaemon daemon,
+            FractalSqlIndex index)
+    {
         super(macro, args);
         this.daemon = daemon;
+        this.index = index;
         this.spec = spec;
         this.bridge = bridge;
         this.config = config;
@@ -150,11 +169,20 @@ public class FractalExpr extends ExprMacroTable.BaseMacroFunctionExpr {
             }
             return ExprEval.ofString(String.valueOf(answer));
         }
+        if (spec.id() == 78 || spec.id() == 79) { // the feature store
+            return ExprEval.ofString(featureStore(spec.id(), raw));
+        }
+        if (spec.id() >= 70 && spec.id() <= 75) { // the index tier
+            return ExprEval.ofString(indexTier(spec.id(), raw));
+        }
         if (spec.id() == 49) { // fractal_search_explore
             return ExprEval.ofString(searchExplore(raw));
         }
-        if (spec.id() == 50) { // fractal_search_debug
+        if (spec.id() == 50) { // fractal_sfs_converge_debug
             return ExprEval.ofString(searchDebug(raw));
+        }
+        if (spec.id() == 76) { // fractal_sfs_converge: the same search without the trace
+            return ExprEval.ofString(sfsConverge(raw));
         }
         if (spec.id() == 51) { // fractal_diversify_enable
             diversifyEnable();
@@ -531,6 +559,75 @@ public class FractalExpr extends ExprMacroTable.BaseMacroFunctionExpr {
      * column -- because a Druid aggregate cannot hold a growable
      * buffer, which is what the corpus is.
      */
+    /** The feature store: fractal_store_morphology (78) and fractal_mine_topology_negatives (79). */
+    private String featureStore(int id, Object[] raw)
+    {
+        if (index == null) {
+            throw new IllegalStateException("fractalsql: the feature store is not available on this node");
+        }
+        try {
+            if (id == 78) {
+                if (raw[0] == null || raw[1] == null) {
+                    return null;
+                }
+                return index.storeFeature((long) number(raw[0], -1), asText(raw[1]));
+            }
+            if (raw[0] == null || raw[1] == null) {
+                return null;
+            }
+            return MAPPER.writeValueAsString(index.mineFeatures(asText(raw[0]), (int) number(raw[1], 10)));
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("fractalsql: the feature store failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * The index tier: the IVF index and the indexed search.
+     *
+     * <p>These functions issue queries of their own -- they read a
+     * datasource, and building an index writes one -- so they belong to
+     * the service tier in practice (the extension's /fractalsql/index
+     * endpoint); the SQL form is here so the names are the same
+     * everywhere in the fleet.
+     */
+    private String indexTier(int id, Object[] raw)
+    {
+        if (index == null) {
+            throw new IllegalStateException("fractalsql: the index tier is not available on this node");
+        }
+        try {
+            final java.util.Map<String, Object> answer;
+            switch (id) {
+            case 70: // fractal_index_create
+                answer = index.create(asText(raw[0]), asText(raw[1]), asText(raw[2]));
+                break;
+            case 71: // fractal_index_rebuild
+                answer = index.rebuild(asText(raw[0]), asText(raw[1]));
+                break;
+            case 72: // fractal_index_drop
+                answer = index.drop(asText(raw[0]));
+                break;
+            case 73: // fractal_index_info
+                answer = index.info(asText(raw[0]));
+                break;
+            case 74: // fractal_index_candidates
+                answer = index.candidates(asText(raw[0]), asText(raw[1]), asText(raw[2]), asText(raw[3]));
+                break;
+            default: // fractal_search -- the indexed search
+                answer = index.search(asText(raw[0]), asText(raw[1]), asText(raw[2]),
+                        (int) number(raw[3], 10), asText(raw[4]));
+                break;
+            }
+            return MAPPER.writeValueAsString(answer);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("fractalsql: the index operation failed: " + e.getMessage(), e);
+        }
+    }
+
     private String searchExplore(Object[] raw)
     {
         final double[][] rows = corpusRows(raw[0]);
@@ -586,6 +683,27 @@ public class FractalExpr extends ExprMacroTable.BaseMacroFunctionExpr {
         // retrieval path.
         return runSearch(query, 1, query.length, query, 1,
                 params.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /** The convergence result without the trajectory trace: {dim, population_size, best_point, best_fit}. */
+    private String sfsConverge(Object[] raw)
+    {
+        final String full = searchDebug(raw);
+        try {
+            final com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            final com.fasterxml.jackson.databind.JsonNode n = om.readTree(full);
+            final java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+            for (String key : new String[]{"dim", "population_size", "best_point", "best_fit"}) {
+                if (n.has(key)) {
+                    out.put(key, om.convertValue(n.get(key), Object.class));
+                } else if (key.equals("population_size")) {
+                    out.put(key, (int) number(raw[2], 50));         // the core's no-corpus result does not echo it
+                }
+            }
+            return om.writeValueAsString(out);
+        } catch (Exception e) {
+            return full;
+        }
     }
 
     /** Run the core's SFS and return its result document. */
@@ -930,7 +1048,7 @@ public class FractalExpr extends ExprMacroTable.BaseMacroFunctionExpr {
                         .num("peak_power", n > 0 ? out[1 + n] : Double.NaN)
                         .num("n_peaks", n)
                         .arrFrom("freqs", out, n, 1)
-                        .arrFrom("powers", out, n, 1 + n);
+                        .arrFrom("power", out, n, 1 + n);
                 final StringBuilder peaks = new StringBuilder("[");
                 for (int i = 0; i < n; i++) {
                     if (i > 0) {
@@ -970,6 +1088,17 @@ public class FractalExpr extends ExprMacroTable.BaseMacroFunctionExpr {
                 final int n = (int) out[0];
                 return ExprEval.ofString(new FractalJson()
                         .num("sharpe", result)
+                        .arrFrom("weights", out, n, 1)
+                        .build());
+            }
+            case 77: { // optimize_subset
+                if (Double.isNaN(result) || out[0] <= 0) {
+                    throw new IllegalArgumentException("fractalsql: fractal_optimize_subset: invalid or infeasible input (equal-length vectors of at most 255 "
+                            + "items, upper_bounds in [0, 1], k at most the item count, and the k largest upper bounds adding up to at least 1)");
+                }
+                final int n = (int) out[0];
+                return ExprEval.ofString(new FractalJson()
+                        .num("score", result)
                         .arrFrom("weights", out, n, 1)
                         .build());
             }

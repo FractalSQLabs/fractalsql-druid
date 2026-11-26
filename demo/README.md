@@ -107,8 +107,8 @@ broker with its own daemon on `:8084`); see
 - **1 — Setup.** A small `demo_alerts` datasource with a deliberate story
   in it: a login-attempt count that escalates (3 → 3 → 17) and a latency
   spike in the last ~10 minutes. Nothing here calls the LLM yet.
-- **2 — Sniper Search.** `fractal_search()` converges a stored column
-  toward a query vector — the fast, precise mode. `fractal_search_debug`
+- **2 — Sniper Search.** `fractal_search_distance()` converges a stored column
+  toward a query vector — the fast, precise mode. `fractal_sfs_converge_debug`
   exposes the tunable form if you need it; the default form here is
   fixed at the SFS engine's own defaults.
 - **3 — Reasoning over real data.** `fractal_reason()` gets a real
@@ -715,3 +715,7 @@ recipe — each closes with its headline check.
   as its second argument, and an empty or NULL context leaves the
   question with nothing to work from; with nothing there, the model
   will say so rather than hallucinate an answer.
+
+* `demo-fractal-index.sql` -- the native IVF index end to end: the build, the indexed
+  search, the exact fallback, the delta (a row added after the build) and the proof
+  that the index was really used.

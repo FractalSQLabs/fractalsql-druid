@@ -271,3 +271,9 @@ call the vectorizer on a broker that has a daemon; the registry is node-local (b
 The Vectorizer is the right choice when you need **seamless semantic synchronization**. If your application requires that every single text update is immediately reflected in your vector index without managing external Python/Node.js workers, the Vectorizer closes that gap.
 
 If you already have a robust external ETL pipeline, you can skip the Vectorizer and use `fractal_embed()` directly to populate your `fractal_vector` columns.
+
+**Use unit-length embeddings.** With embeddings of unit length the cosine ordering and the
+L2 ordering of a query are the same, so one index answers both and the ranking does not
+depend on the vector's magnitude. Embeddings that are not unit length -- a raw pooled model
+output, say -- should be normalised once on the way in and stored normalised.
+

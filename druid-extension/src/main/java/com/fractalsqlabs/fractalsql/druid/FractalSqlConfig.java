@@ -158,6 +158,16 @@ public class FractalSqlConfig {
                         + "nobody configured cannot have its audit chain destroyed by a query");
         key("ledger.read_only", Kind.BOOL, false, "false",
                 "a deliberate posture flag: it latches the ledger's destructive operations");
+        key("agent_use_index", Kind.STRING, false, "off",
+                "an operator switch, off by default (off, on or auto; true and false still mean on and off): with it on, the nearest-row agents "
+                        + "(route_task, outlier_intercept, schedule_workload) search through a fractal_index when one covers the table and column; "
+                        + "auto uses an index only when it is ready, was calibrated to its target recall (an estimate from a sample, made at build time) and "
+                        + "the table has at least agent_index_min_rows rows; otherwise it scans exactly. An index can rarely "
+                        + "pick a different nearest row than the exact scan");
+        key("agent_index_min_rows", Kind.INT, false, "10000",
+                "auto mode: the smallest table the agents search through an index (below it the exact scan is as fast and exact)");
+        key("agent_context_row_bytes", Kind.INT, false, "8192",
+                "the longest text cell the retrieval agents pass to the model; longer cells are cut with a marker (0 = no limit)");
         key("coordinator_url", Kind.PATH, false, "",
                 "where the coordinator is reachable: the task status lives there, not on the node that submitted the task");
     }
@@ -279,6 +289,16 @@ public class FractalSqlConfig {
         return Double.parseDouble(operatorValue(name).trim());
     }
 
+    /** agent_use_index as a mode: 0 off, 1 on, 2 auto. The old boolean spellings (true, yes, 1) still mean on. */
+    public int agentUseIndexMode()
+    {
+        final String v = operatorValue("agent_use_index").trim().toLowerCase(java.util.Locale.ROOT);
+        if (v.equals("auto")) {
+            return 2;
+        }
+        return v.equals("on") || v.equals("true") || v.equals("yes") || v.equals("1") ? 1 : 0;
+    }
+
     /** The operator's value as a boolean. */
     public boolean operatorBool(String name)
     {
@@ -341,7 +361,7 @@ public class FractalSqlConfig {
         // and the current ones are underscored (enterprise_ledger_key).
         return name.endsWith(".token") || name.endsWith(".key")
                 || name.endsWith("_token") || name.endsWith("_key")
-                // the path of a key file names where the secret is kept (SECURITY_AUDIT.md 3.24)
+                // the path of a key file names where the secret is kept
                 || name.endsWith("_key_file") || name.endsWith(".key_file");
     }
 

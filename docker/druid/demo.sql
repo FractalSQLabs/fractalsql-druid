@@ -40,7 +40,7 @@ WHERE "ROUTINE_NAME" = 'FRACTAL_SEARCH';
 -- =========================================================================
 -- 2. The FractalSQL search surface.
 --
--- fractal_search(vector_column, query_text) scores a row against the
+-- fractal_search_distance(vector_column, query_text) scores a row against the
 -- SFS-refined query point. The value is a cosine distance: 0.0 is an
 -- exact match, larger is further away. The query vector is a VARCHAR
 -- literal in the core's text form -- CSV ("1.0,0.5,-0.25") or
@@ -49,7 +49,7 @@ WHERE "ROUTINE_NAME" = 'FRACTAL_SEARCH';
 -- The seed data holds emb = [1,0,0] on row "a", so the closest row
 -- must come back at distance 0.
 -- =========================================================================
-SELECT "id", "grp", fractal_search("emb", '[1.0,0.0,0.0]') AS "dist"
+SELECT "id", "grp", fractal_search_distance("emb", '[1.0,0.0,0.0]') AS "dist"
 FROM "demo_vecs"
 GROUP BY "id", "grp"
 ORDER BY "dist" ASC
@@ -59,7 +59,7 @@ LIMIT 5;
 -- 3. The same search with a different query vector, to show the
 --    ranking move with the query rather than staying put.
 -- =========================================================================
-SELECT "id", "grp", fractal_search("emb", '[0.0,1.0,0.0]') AS "dist"
+SELECT "id", "grp", fractal_search_distance("emb", '[0.0,1.0,0.0]') AS "dist"
 FROM "demo_vecs"
 GROUP BY "id", "grp"
 ORDER BY "dist" ASC

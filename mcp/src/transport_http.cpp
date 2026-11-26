@@ -508,7 +508,7 @@ namespace fsqlmcp
         }
 
         // A header the server acts on that arrived twice is refused: two values for the host, the credential, the origin or the
-        // framing are an ambiguity a proxy in front and this parser could resolve differently (SECURITY_AUDIT.md 3.18).
+        // framing are an ambiguity a proxy in front and this parser could resolve differently.
         static const char* const kSingleValued[] = { "host", "authorization", "origin", "content-type", "transfer-encoding",
                                                      "mcp-session-id", "mcp-protocol-version", "mcp-method", "mcp-name" };
         for( const char* h : kSingleValued )
@@ -605,7 +605,7 @@ namespace fsqlmcp
         if( path == "/readyz" )
         {
             // This route is unauthenticated and the probe is a live Druid query: the result is kept for 5 s so a burst of
-            // requests costs Druid one query, not one each (SECURITY_AUDIT.md 3.14).
+            // requests costs Druid one query, not one each.
             static std::mutex probeMu;
             static std::chrono::steady_clock::time_point probedAt{};
             static bool probed = false, lastReady = false;
@@ -685,7 +685,7 @@ namespace fsqlmcp
         if( host == "localhost" ) return true;
         {
             // 127.0.0.0/8 is loopback: parsed as an address, not matched as a prefix (a name such as 127.evil.example or
-            // 127.0.0.1.evil.example is not an address) (SECURITY_AUDIT.md 3.17).
+            // 127.0.0.1.evil.example is not an address).
             in_addr addr{};
             if( inet_pton( AF_INET, host.c_str(), &addr ) == 1 )
                 return ( ntohl( addr.s_addr ) >> 24 ) == 127;
@@ -1011,7 +1011,7 @@ namespace fsqlmcp
     // credential: the caller answers "not found" either way. When it names none and the context cap
     // (FSQL_MCP_MAX_SESSIONS, the cap initialize enforces) is already reached, returns false with tooMany set,
     // and the caller answers 503: minting here without the cap let a flood of context-less calls grow the table
-    // without bound (SECURITY_AUDIT.md 3.7).
+    // without bound.
     static bool resolveContext( ClientState& state, const std::string& requested, const std::string& ownerFp,
                                 std::string& contextIdOut, std::string& connKeyOut,
                                 std::vector<std::string>& expiredConnKeys, bool& tooMany )

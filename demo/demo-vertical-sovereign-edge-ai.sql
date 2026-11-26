@@ -548,13 +548,13 @@ FROM "vse_cloud";
 -- ---------------------------------------------------------------------------
 SELECT fractal_json_value("d", '$.best_fit') AS "best_fit",
        fractal_json_text("d", '$.best_point') AS "refined_profile"
-FROM (SELECT fractal_search_debug('[0.3,0.6,0.9,0.2,0.0]', 50, 50, 2) AS "d")
+FROM (SELECT fractal_sfs_converge_debug('[0.3,0.6,0.9,0.2,0.0]', 50, 50, 2) AS "d")
 GROUP BY "d";
 
 -- The refined profile, as the core's text vector form.
 REPLACE INTO vse_profile OVERWRITE ALL
 SELECT fractal_json_text("d", '$.best_point') AS "profile"
-FROM (SELECT fractal_search_debug('[0.3,0.6,0.9,0.2,0.0]', 50, 50, 2) AS "d")
+FROM (SELECT fractal_sfs_converge_debug('[0.3,0.6,0.9,0.2,0.0]', 50, 50, 2) AS "d")
 GROUP BY "d"
 PARTITIONED BY ALL;
 

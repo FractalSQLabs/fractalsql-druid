@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * The JNI shim must not trust the lengths the Java side hands it: the core relies on a byte or element count
  * that the shim derives from one argument, while the buffer it is read from comes from another. Each case here
- * gives the shim lengths that disagree (SECURITY_AUDIT.md 3.2, 3.3, 3.6 and 3.13) and requires it to refuse
+ * gives the shim lengths that disagree and requires it to refuse
  * (NaN, or null) instead of reading past the buffer. These call Native directly, so they test the shim itself,
  * not the Java validation in front of it.
  */

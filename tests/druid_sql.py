@@ -43,6 +43,32 @@ check("FRACTAL_VECTOR_DIMS is an integer", q("SELECT FRACTAL_VECTOR_DIMS('[1,2,3
 tda = q("SELECT FRACTAL_TDA_PERSISTENCE_DIAGRAM('0,0,1,0,0,1,1,1', 2, 1, 2.5)")
 check("TDA takes max_dim and max_thresh", isinstance(tda, str) and "betti1" in tda, tda)
 check("the two-argument TDA form is gone", isinstance(q("SELECT FRACTAL_TDA_PERSISTENCE_DIAGRAM('0,0,1,0', 2)"), Exception))
+sub = q("SELECT FRACTAL_OPTIMIZE_SUBSET('[0.9,0.1,0.5,0.8,0.2,0.7]','[0.6,0.6,0.6,0.6,0.6,0.6]',2,NULL,0,7)")
+sw = json.loads(sub)["weights"] if isinstance(sub, str) else []
+check("FRACTAL_OPTIMIZE_SUBSET weights sum to 1, at most k are nonzero and none passes its bound",
+      len(sw) == 6 and abs(sum(sw) - 1.0) < 1e-6 and sum(1 for x in sw if x > 1e-9) <= 2 and all(x <= 0.6 + 1e-6 for x in sw), sub)
+check("FRACTAL_OPTIMIZE_SUBSET picks the two most valuable items", len(sw) == 6 and sw[0] > 0 and sw[3] > 0, sub)
+check("FRACTAL_OPTIMIZE_SUBSET refuses bounds that cannot sum to 1",
+      isinstance(q("SELECT FRACTAL_OPTIMIZE_SUBSET('[0.9,0.1,0.5,0.8]','[0.1,0.1,0.1,0.1]',2,NULL,0,7)"), Exception))
+# the named feature store (a datasource: the newest row of a doc_id wins)
+import time
+for did, vec in ((9101, "[1,0,0]"), (9102, "0.9,0.1,0"), (9103, "[0,1,0]"), (9102, "0.8,0.2,0"), (9109, "[1,1]")):
+    q("SELECT FRACTAL_STORE_MORPHOLOGY(%d,'%s')" % (did, vec))
+fm = []
+for _ in range(30):
+    got = q("SELECT FRACTAL_MINE_TOPOLOGY_NEGATIVES('[1,0,0]',50)")
+    fm = [h for h in json.loads(got) if h["doc_id"] in (9101, 9102, 9103)] if isinstance(got, str) else []
+    if len(fm) == 3 and abs(fm[1]["distance"] - 0.28284271) < 1e-5:
+        break
+    time.sleep(2)
+check("the feature store mines nearest first and the newest write of a doc wins",
+      [h["doc_id"] for h in fm] == [9101, 9102, 9103] and abs(fm[1]["distance"] - 0.28284271) < 1e-5, fm)
+check("the feature store skips a vector of another dimension", all(h["doc_id"] != 9109 for h in fm))
+check("the feature store refuses k = 0", isinstance(q("SELECT FRACTAL_MINE_TOPOLOGY_NEGATIVES('[1,0,0]',0)"), Exception))
+check("the feature store refuses a negative doc_id", isinstance(q("SELECT FRACTAL_STORE_MORPHOLOGY(-1,'[1]')"), Exception))
+conv = q("SELECT FRACTAL_SFS_CONVERGE('[1,0,0]',5,8,2)")
+check("FRACTAL_SFS_CONVERGE answers {dim, population_size, best_point, best_fit} without a trace",
+      isinstance(conv, str) and all(k in conv for k in ("dim", "population_size", "best_point", "best_fit")) and "paths" not in conv, conv)
 check("dimension_drift answers a document", "drift" in str(q("SELECT FRACTAL_DIMENSION_DRIFT('" + ",".join(str((i % 7) * 0.1 + i * 0.01) for i in range(96)) + "', 48)")))
 
 # session settings live in the daemon

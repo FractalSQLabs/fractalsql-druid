@@ -31,6 +31,7 @@
 #include "adapters/analytics.h"
 #include "adapters/enterprise.h"
 #include "adapters/vectorizer.h"
+#include "adapters/index.h"
 #include "adapters/admin.h"
 
 
@@ -47,13 +48,13 @@ static std::vector<ToolSpec> buildAllTools( Db& db )
     const std::vector<std::vector<ToolSpec>> tiers{
         buildDiscoveryTools( db, rowCfg ), buildCognitionTools( db ), buildAgencyTools( db ),
         buildAnalyticsTools( db, rowCfg ), buildEnterpriseTools( db ),
-        buildVectorizerTools( db ), buildAdminTools( db )
+        buildVectorizerTools( db ), buildIndexTools( db ), buildAdminTools( db )
     };
     for( const auto& v : tiers )
         all.insert( all.end(), v.begin(), v.end() );
     Resources::init( &db );
 
-    // 82 tools total: 14+4+23+22+10+5+4. This is what the engine actually
+    // 84 tools total: 13+4+22+20+10+5+6+4. This is what the engine actually
     // registers, verified against the live extension, and main.cpp checks
     // the same total when it labels a filtered surface.
 
@@ -366,7 +367,7 @@ static int checkSchemaGate( const std::string& lockPath, const std::string& hash
         }
         std::cerr << "WARN: schema lock '" << lockPath << "' not found; the tool-surface drift check is skipped\n";
     }
-    std::string filtered = ( tools.size() == 82 ) ? std::string() : " (filtered surface)";
+    std::string filtered = ( tools.size() == 84 ) ? std::string() : " (filtered surface)";
     if( lockResult == LockCheckResult::Warn )
     {
         std::cerr << "schema hash mismatch: expected " << expected << " got " << hash << " ("

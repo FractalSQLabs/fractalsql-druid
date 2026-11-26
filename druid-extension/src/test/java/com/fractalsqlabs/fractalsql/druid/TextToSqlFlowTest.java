@@ -71,7 +71,8 @@ public class TextToSqlFlowTest {
         final FractalSqlService service = new FractalSqlService(config, bridge, () -> props);
         final FractalSqlEnterprise enterprise = new FractalSqlEnterprise(config, daemon);
         resource = new FractalSqlResource(service, new FractalSqlAgents(service, bridge, enterprise), bridge,
-                new FractalSqlVectorizer(service, bridge), enterprise, new FractalSqlSessions());
+                new FractalSqlVectorizer(service, bridge), new FractalSqlIndex(service, daemon),
+                enterprise, new FractalSqlSessions());
     }
 
     @AfterEach

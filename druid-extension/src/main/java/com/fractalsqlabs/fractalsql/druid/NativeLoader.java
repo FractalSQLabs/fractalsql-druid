@@ -107,7 +107,7 @@ public final class NativeLoader {
             } else {
                 tmp = Files.createTempFile("fractalsql-jni-", suffixFor(key));
             }
-            // Owner-only before anything is written into it, and before it is loaded (SECURITY_AUDIT.md 3.25).
+            // Owner-only before anything is written into it, and before it is loaded.
             try {
                 Files.setPosixFilePermissions(tmp, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
             } catch (UnsupportedOperationException ignored) {

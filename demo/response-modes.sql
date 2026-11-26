@@ -70,7 +70,7 @@ SELECT fractal_reason(
 -- is fixed to code.
 -- ---------------------------------------------------------------------------
 SELECT fractal_reason(
-    'write a single Apache Druid SQL SELECT statement that selects all rows from demo_alerts where severity is critical',
+    'write a single Apache Druid SQL SELECT statement that selects all rows from the table demo_alerts (columns: service, severity, message) where severity is critical',
     '{}') AS "code_mode_answer";
 
 -- ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ SELECT CASE
                                               ' | ')
                                    FROM "demo_alerts")))) > 0
             AND (SELECT fractal_reason(
-                                  'write a single Apache Druid SQL SELECT statement that selects all rows from demo_alerts where severity is critical',
+                                  'write a single Apache Druid SQL SELECT statement that selects all rows from the table demo_alerts (columns: service, severity, message) where severity is critical',
                                   '{}')) LIKE '%SELECT%'
             AND (SELECT COALESCE(CAST(fractal_json_value(
                                   fractal_reason(

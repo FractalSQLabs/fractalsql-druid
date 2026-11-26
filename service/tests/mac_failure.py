@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Daniel Gardiner d/b/a FractalSQLabs
-"""Frame authentication needs no allocation, and a forged frame is refused whatever the allocator does (SECURITY_AUDIT.md 3.1).
+"""Frame authentication needs no allocation, and a forged frame is refused whatever the allocator does.
 
 usage: mac_failure.py SOCKET KEYFILE PAYLOAD_LEN
 The daemon runs with fail_size_preload.so and FSQL_FAIL_SIZE = 32 + PAYLOAD_LEN, so a buffer of the size the daemon used to

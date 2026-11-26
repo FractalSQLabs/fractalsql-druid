@@ -8,7 +8,7 @@ import com.fractalsqlabs.fractalsql.druid.NativeLoader;
 
 /**
  * Drives the JNI shim from several threads at once, for the ThreadSanitizer build (build_test.sh gate 40): the pure functions,
- * the cycle detector, the vector functions and the node-wide diversify context (under its lock, SECURITY_AUDIT.md 3.4). TSan
+ * the cycle detector, the vector functions and the node-wide diversify context (under its lock). TSan
  * instruments the shim only; the vendored core is not instrumented, so a race inside the core is not seen.
  */
 public class ShimStress {

@@ -24,9 +24,19 @@
  */
 
 /* Search and discovery */
+/* fractal_sfs_converge is the table-free convergence function: it runs
+ * SFS toward the query direction, it is NOT a retrieval function. It
+ * was renamed from fractal_search (2026-11-18) and there is NO alias:
+ * fractal_search below is the tombstone that refuses the old call and
+ * names the new name. The indexed search (fractal_search over a
+ * DATASOURCE) is a Java-side operation in the extension, because it has
+ * to read the datasource and the index's cells -- see
+ * druid-extension/src/main/java/com/fractalsqlabs/fractalsql/druid/
+ * FractalSqlIndex.java. */
+X(fractal_sfs_converge, STR, r)
 X(fractal_search, STR, r)
 X(fractal_search_explore, STR, r)
-X(fractal_search_debug, STR, r)
+X(fractal_sfs_converge_debug, STR, r)
 /* Dimension, analytics, and informational */
 X(fractal_version, STR, r)
 X(fractal_edition, STR, r)
@@ -112,3 +122,12 @@ X(fractal_vascular_network, STR, r)
 X(fractal_cortical_folding, STR, r)
 X(fractal_nerve_plexus_metric, STR, r)
 X(fractal_morphological_complexity, STR, r)
+
+/* IVF index plumbing. The maths lives in the DAEMON (this host is
+ * split-process); the datasource I/O lives in the extension, which
+ * writes the index's cells into a companion datasource with an MSQ
+ * INSERT (Druid has no DDL and no DML) and reads them back for a
+ * search. This one stateful UDF is the whole plumbing protocol: a JSON
+ * request in, a JSON response out. It is 's' (stateful) because it
+ * mutates the daemon's index state. */
+X(fractal_index_op, STR, s)

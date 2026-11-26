@@ -4,9 +4,11 @@
 -- function table is generated from protocol/functions.def and cross-checked against this file by
 -- scripts/gen_udf.py, so a function cannot be added to one and forgotten in the other. Druid does not
 -- run this file: the daemon calls the bodies directly.
+DROP FUNCTION IF EXISTS fractal_sfs_converge;
 DROP FUNCTION IF EXISTS fractal_search;
 DROP FUNCTION IF EXISTS fractal_search_explore;
-DROP FUNCTION IF EXISTS fractal_search_debug;
+DROP FUNCTION IF EXISTS fractal_sfs_converge_debug;
+DROP FUNCTION IF EXISTS fractal_index_op;
 DROP FUNCTION IF EXISTS fractal_edition;
 DROP FUNCTION IF EXISTS fractal_version;
 DROP FUNCTION IF EXISTS fractal_dimension_dfa;
@@ -101,21 +103,42 @@ DROP FUNCTION IF EXISTS fractal_ledger_verify;
 DROP FUNCTION IF EXISTS fractal_audit_log;
 DROP FUNCTION IF EXISTS fractal_audit_unpack;
 
--- fractal_search(vector_csv, query_csv, k, params) -> JSON STRING
+-- fractal_sfs_converge(vector_csv, query_csv, k, params) -> JSON STRING
+-- The table-free convergence function: it runs SFS toward the query
+-- direction, it is NOT a retrieval function. It was RENAMED from
+-- fractal_search on 2026-11-18 and there is NO alias.
+CREATE FUNCTION fractal_sfs_converge    RETURNS STRING SONAME 'fractalsql.so';
+
+-- fractal_search(vector_csv, query_csv, k, params) -> the OLD inline
+-- corpus surface, retired. Calling it fails with a message that names
+-- fractal_sfs_converge (the convergence function) and the indexed
+-- fractal_search (the search over a datasource).
 CREATE FUNCTION fractal_search    RETURNS STRING SONAME 'fractalsql.so';
 
 -- Scout Mode: fractal_search_explore(corpus, query, params) -> JSON STRING
 -- (walk=0 dispersion; result JSON carries the additive "population")
 CREATE FUNCTION fractal_search_explore   RETURNS STRING SONAME 'fractalsql.so';
 
--- fractal_search_debug(query_csv [, iterations [, population_size
+-- fractal_sfs_converge_debug(query_csv [, iterations [, population_size
 --                            [, diffusion_factor [, seed]]]]) -> JSON STRING
 -- The convergence view of the Stochastic Fractal Search: no corpus, no
 -- top-k -- just the walk's own trace on one query point, so an
 -- operator can see where the search landed and how well it fit. The
 -- result carries "best_point", "best_fit" and the debug "trace".
 -- "seed" is optional: pin it for a byte-stable, reproducible trace.
-CREATE FUNCTION fractal_search_debug   RETURNS STRING SONAME 'fractalsql.so';
+CREATE FUNCTION fractal_sfs_converge_debug   RETURNS STRING SONAME 'fractalsql.so';
+
+-- fractal_index_op(request_json) -> JSON STRING
+-- The IVF index plumbing: ONE stateful UDF that carries the whole
+-- protocol between the extension and the daemon's index maths (train,
+-- encode, open, probe, load_cell, search, verify, close). The request
+-- is a flat JSON object with an "op" key; a failure comes back as
+-- {"error":"<message>"}. The index's own SQL surface -- fractal_index
+-- _create / _rebuild / _drop / _info / _candidates and the indexed
+-- fractal_search -- is Java-side, in the extension, because Druid has
+-- no DDL and no DML: the index's cells live in a companion datasource,
+-- written with an MSQ INSERT.
+CREATE FUNCTION fractal_index_op   RETURNS STRING SONAME 'fractalsql.so';
 
 -- fractal_edition() -> 'Community'
 CREATE FUNCTION fractal_edition RETURNS STRING SONAME 'fractalsql.so';
@@ -128,7 +151,7 @@ CREATE FUNCTION fractal_version RETURNS STRING SONAME 'fractalsql.so';
 --
 -- the host has no float8[]/int4[] array types and no DEFAULT-argument
 -- syntax for CREATE FUNCTION. Array arguments are a CSV-or-JSON-array
--- STRING (the same convention fractal_search's own vector_csv/
+-- STRING (the same convention fractal_sfs_converge's own vector_csv/
 -- query_csv arguments use), and optional scalar arguments (seed /
 -- use_obl / diffusion_mode on fractal_optimize_portfolio) are bundled
 -- into one trailing JSON params STRING instead. JSON return values are
@@ -331,16 +354,16 @@ CREATE FUNCTION fractal_morphological_complexity RETURNS STRING SONAME 'fractals
 --
 -- fractal_search_explore covers table/column-scan discovery, using the same
 -- "Scout" walk=0 dispersion and corpus-as-argument convention
--- fractal_search itself uses. UDFs cannot scan a table or
+-- fractal_sfs_converge itself uses. UDFs cannot scan a table or
 -- column directly, so the caller builds the corpus and passes it in.
 --
--- fractal_search's own JSON output already carries a top_k array, so
--- JSON_TABLE() over fractal_search(...) gets per-row (idx, dist)
+-- fractal_sfs_converge's own JSON output already carries a top_k array, so
+-- JSON_TABLE() over fractal_sfs_converge(...) gets per-row (idx, dist)
 -- results in plain SQL, with no separate telemetry function needed:
 --
 --   SELECT t.idx, t.dist
 --   FROM JSON_TABLE(
---          (SELECT fractal_search(@corpus, @query, 5, '{}')),
+--          (SELECT fractal_sfs_converge(@corpus, @query, 5, '{}')),
 --          '$.top_k[*]' COLUMNS (idx INT PATH '$.idx', dist DOUBLE PATH '$.dist')
 --        ) t;
 --
@@ -351,14 +374,14 @@ CREATE FUNCTION fractal_morphological_complexity RETURNS STRING SONAME 'fractals
 -- process serving every connection, so per-connection Diversify tuning
 -- (and its rolling D_q/overhead stats) needs an explicit key rather
 -- than a single shared static. Convention: pass CONNECTION_ID() as
--- session_id. fractal_search / fractal_search_explore pick up that same
+-- session_id. fractal_sfs_converge / fractal_search_explore pick up that same
 -- session's ctx via an optional "session_id" key in their own params
 -- JSON, so Diversify settings actually affect real searches:
 --
 --   SELECT fractal_diversify_enable(CONNECTION_ID());
 --   SELECT fractal_diversify_set_params(CONNECTION_ID(),
 --            '{"window_n": 8, "repulsion_weight": 0.7}');
---   SELECT fractal_search(@corpus, @query, 5,
+--   SELECT fractal_sfs_converge(@corpus, @query, 5,
 --            JSON_SET('{}', '$.session_id', CONNECTION_ID()));
 --   SELECT fractal_detect_collapse(CONNECTION_ID()) AS dq;
 --   SELECT fractal_explain_result(CONNECTION_ID()) AS diagnostics;
@@ -586,7 +609,7 @@ CREATE FUNCTION fractal_vector_hamming_distance RETURNS INTEGER SONAME 'fractals
 --   FRACTALSQL_HTTP_ALLOW_PLAINTEXT  "1" to allow a non-TLS URL
 -- Both functions take session_id BIGINT as their first argument (pass
 -- CONNECTION_ID() by convention, same as fractal_diversify_enable and
--- fractal_search's own session_id), since each session gets its own
+-- fractal_sfs_converge's own session_id), since each session gets its own
 -- reasoning-dispatch ctx.
 --
 -- fractal_reason(session_id, query [, context]) -> TEXT
@@ -2237,15 +2260,15 @@ GROUP BY v.id, v.source_table, v.text_col, v.embedding_col, v.enabled, q.status;
 -- fractal_search_trajectory/fractal_cross_modal_search are not
 -- separate FractalSQL core C ABI primitives: they are SQL/PSM
 -- compositions that scan a real table into an in-memory corpus and
--- then call the SAME fsql_search_ptr core primitive fractal_search's
+-- then call the SAME fsql_search_ptr core primitive fractal_sfs_converge's
 -- own C UDF already wraps, just with a different corpus (cohort-
 -- filtered / delta-vector / weighted-concat) and a doc_id remap.
--- Since fractal_search already exists here as a plain SQL-callable UDF
+-- Since fractal_sfs_converge already exists here as a plain SQL-callable UDF
 -- (corpus_csv, query_csv, k, params) -> JSON with a
 -- "top_k":[{"idx":..,"dist":..}] array, none of these four need ANY
 -- new C code at all: they build the corpus in SQL (JSON_ARRAYAGG, with
--- a parallel id list to remap fractal_search's corpus-position idx
--- back to a real row id), call the existing fractal_search UDF, then
+-- a parallel id list to remap fractal_sfs_converge's corpus-position idx
+-- back to a real row id), call the existing fractal_sfs_converge UDF, then
 -- JSON_TABLE the result. All four return their (doc_id, dist) rows as
 -- a JSON array of objects via an OUT param, not a real multi-row
 -- result set: unlike a bare SELECT-ending procedure (which DOES
@@ -2271,7 +2294,7 @@ GROUP BY v.id, v.source_table, v.text_col, v.embedding_col, v.enabled, q.status;
 -- type CAST() recognizes as a target), and JSON_ARRAYAGG on a bare
 -- TEXT column whose value already IS valid JSON array text produces
 -- an array of quoted JSON STRING literals ("[1,2,3]"), not a real
--- nested array; fractal_search's corpus parser needs the latter.
+-- nested array; fractal_sfs_converge's corpus parser needs the latter.
 -- The id lists (real row ids, plain scalars, never pre-JSON-encoded
 -- text) use JSON_ARRAYAGG normally, with no such gap.
 -- ---------------------------------------------------------------------
@@ -2281,7 +2304,7 @@ DELIMITER $$
 -- Shared core, CALLed by all four public primitives below. p_corpus_json
 -- is a JSON array of row-vectors (each a JSON array of numbers) in the
 -- SAME order as p_ids_json (a parallel JSON array of the real row ids
--- fractal_search's 0-based corpus-position idx should be remapped to).
+-- fractal_sfs_converge's 0-based corpus-position idx should be remapped to).
 CREATE PROCEDURE _fractalsql_telemetry_topk(
     IN  p_corpus_json JSON,
     IN  p_ids_json    JSON,
@@ -2302,7 +2325,7 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '_fractalsql_telemetry_topk: no corpus rows to search';
     END IF;
 
-    -- "session_id": CONNECTION_ID(). Without this, fractal_search runs
+    -- "session_id": CONNECTION_ID(). Without this, fractal_sfs_converge runs
     -- against an anonymous, session-less ctx, and Diversify/Repulsion
     -- state (fractal_diversify_enable/_set_params) enabled on THIS
     -- connection's own session never actually applies to searches made
@@ -2312,7 +2335,7 @@ BEGIN
     -- the one fractal_diversify_enable(CONNECTION_ID()) configured, so
     -- fractal_agent_feedback_audit's D_q rolling window would never
     -- warm up no matter how many telemetry searches ran. See
-    -- fractal_search's own "session_id" params-JSON key (fractalsql.c)
+    -- fractal_sfs_converge's own "session_id" params-JSON key (fractalsql.c)
     -- for the convention this threads into.
     -- The search parameters are the CORE's own names: "iterations",
     -- "population_size", "diffusion_factor", "walk", "seed", "debug",
@@ -2324,10 +2347,10 @@ BEGIN
         '{"iterations":15,"population_size":50,"diffusion_factor":2,',
         '"walk":0.5,"session_id":', CONNECTION_ID(), '}');
 
-    SET v_search_result = fractal_search(p_corpus_json, p_query_json, p_k, v_params);
+    SET v_search_result = fractal_sfs_converge(p_corpus_json, p_query_json, p_k, v_params);
 
     -- Remap corpus-position idx -> real doc_id via p_ids_json. A
-    -- fractal_search result may legitimately carry fewer than k top_k
+    -- fractal_sfs_converge result may legitimately carry fewer than k top_k
     -- entries if the corpus itself has fewer rows; JSON_TABLE just
     -- naturally yields fewer rows in that case, nothing special needed.
     SELECT JSON_ARRAYAGG(JSON_OBJECT(
@@ -2682,7 +2705,7 @@ END$$
 -- its own dimensions, scaled by alpha/(1-alpha) before concatenation.
 -- table_name.vector_col must already be stored in this same combined
 -- shape (an upstream ETL concern, not something this validates beyond
--- fractal_search's own dimension-match requirement).
+-- fractal_sfs_converge's own dimension-match requirement).
 CREATE PROCEDURE fractal_cross_modal_search(
     IN  p_table_name        VARCHAR(128),
     IN  p_vector_col        VARCHAR(64),
@@ -2779,7 +2802,7 @@ END$$
 
 -- fractal_store_morphology(doc_id, feature_array[, source])
 -- Upserts feature_array (a JSON-array-string vector, same convention as
--- fractal_search's vector_csv/query_csv) against doc_id.
+-- fractal_sfs_converge's vector_csv/query_csv) against doc_id.
 CREATE PROCEDURE fractal_store_morphology(
     IN p_doc_id        BIGINT,
     IN p_feature_array TEXT
@@ -2880,7 +2903,7 @@ DELIMITER ;
 -- fractal_ledger_flush/_load/_compact/_reset_soft/_reset_hard(session_id)
 --   -> INT (0). Thin wrappers over the enterprise core's fsql_ledger_*
 -- functions, operating on the session's own ctx, the same ctx
--- fractal_search and fractal_diversify_* use. That ctx now carries a
+-- fractal_sfs_converge and fractal_diversify_* use. That ctx now carries a
 -- real file-backed storage VFS (see above), so flush/load genuinely
 -- persist and rehydrate the Truth/Shadow ledgers across process
 -- restarts, not just within one session.
@@ -2949,4 +2972,4 @@ CREATE FUNCTION fractal_audit_unpack RETURNS STRING SONAME 'fractalsql.so';
 --     JSON_EXTRACT(r, '$.best_point')    AS best_point,
 --     JSON_EXTRACT(r, '$.top_k[0].idx')  AS top_hit,
 --     JSON_EXTRACT(r, '$.top_k[0].dist') AS top_dist
---   FROM (SELECT fractal_search(@corpus, @query, 3, @params) AS r) t;
+--   FROM (SELECT fractal_sfs_converge(@corpus, @query, 3, @params) AS r) t;

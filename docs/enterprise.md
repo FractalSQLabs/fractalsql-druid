@@ -372,5 +372,14 @@ on a missing snapshot, so watch the collect job's exit status.
 
 ---
 
+## Ledger retention
+
+By default the ledger *fades*: the Shadow weights decay as new feedback arrives, so recent decisions dominate. Set
+`FRACTALSQL_LEDGER_RETENTION=exact` in the environment of the process that hosts the ledger to keep every Shadow
+weight exactly as recorded instead. `fade` is the default; any other value is reported in the log and treated as
+`fade`. The mode is applied to each session's context the first time the enterprise library is in use for it.
+`exact` needs an enterprise library from core 2.0.28 or later (one that exports `fsql_ledger_set_retention`); against an
+older library the request is refused in the log and the ledger stays at `fade`, never silently.
+
 For enterprise editions, licensing, and support, contact
 **enterprise@fractalsqlabs.com**.

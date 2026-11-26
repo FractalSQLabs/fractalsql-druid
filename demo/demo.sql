@@ -77,7 +77,7 @@ ORDER BY "service";
 --   {"ts": "now", "label": "d", "pt": "[0.0,0.0,1.0]"}
 -- ]};
 
-SELECT "label", fractal_search("pt", '0.6,0.8,0.0') AS "dist"
+SELECT "label", fractal_search_distance("pt", '0.6,0.8,0.0') AS "dist"
 FROM "demo_points"
 GROUP BY "label"
 ORDER BY "dist" ASC
@@ -142,11 +142,11 @@ WHERE "__time" > CURRENT_TIMESTAMP - INTERVAL '1' HOUR;
 -- ORDER BY the same aggregate picks the closest group, and the CASE
 -- says whether that group is at distance zero.
 SELECT CASE
-           WHEN fractal_search("pt", '0.6,0.8,0.0') < 0.0001
+           WHEN fractal_search_distance("pt", '0.6,0.8,0.0') < 0.0001
             THEN 'HEADLINE kit=demo ok'
             ELSE 'HEADLINE kit=demo FAILED'
        END AS "headline"
 FROM "demo_points"
 GROUP BY "label"
-ORDER BY fractal_search("pt", '0.6,0.8,0.0') ASC
+ORDER BY fractal_search_distance("pt", '0.6,0.8,0.0') ASC
 LIMIT 1;

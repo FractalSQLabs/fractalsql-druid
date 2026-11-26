@@ -65,11 +65,10 @@ namespace fsqlmcp
                   { "mimeType", "application/json" } },
             Json{ { "uri", "fractalsql://vectorizer/status" }, { "name", "Vectorizer status" },
                   { "description",
-                    "The fractal_vectorizer_status view's contents (one row per "
-                    "vectorizer_id + status pair, with counts and most-recent "
-                    "failure detail): a resource rather than a tool since it is "
-                    "pure monitoring state with no arguments. NOTE: the "
-                    "registry/queue are TEMP objects on THIS session's connection." },
+                    "One entry per vectorizer on the node that serves the call: its id, "
+                    "source datasource, text and embedding columns, state and queue counts "
+                    "(the same data as the fractal_vectorizer_status tool). The registry "
+                    "lives in the extension on that node." },
                   { "mimeType", "application/json" } },
             Json{ { "uri", "fractalsql://agents" }, { "name", "Agent catalog" },
                   { "description",
@@ -190,42 +189,9 @@ namespace fsqlmcp
 
         if( uri == "fractalsql://vectorizer/status" )
         {
-            // fractal_vectorizer_status is a VIEW, not a function; read the
-            // live rows off this session's connection and json-encode them.
-            // The registry/queue are TEMP objects scoped to the connection
-            // that created a vectorizer; on a fresh session the view is
-            // absent, and the engine's own message (verbatim, 1.6) carries
-            // that. Same error shape + class the Python reference used.
-            // The error is rethrown after the handler, never from inside one: a throw
-            // from a catch block can miscompile under some clang builds.
-            std::exception_ptr pending;
-            try
-            {
-                const std::vector<std::string> names = g_db->columnNames( "SELECT * FROM fractal_vectorizer_status" );
-                const std::vector<std::vector<SqlValue>> rows =
-                    g_db->queryAll( "SELECT * FROM fractal_vectorizer_status", {} );
-                Json arr = Json::array();
-                for( const auto& row : rows )
-                {
-                    Json obj = Json::object();
-                    for( std::size_t c = 0; c < row.size() && c < names.size(); ++c )
-                        obj[ names[ c ] ] = asScalarJson( row[ c ] );
-                    arr.push_back( std::move( obj ) );
-                }
-                return contents( uri, "application/json", arr.dump( 2 ) );
-            }
-            catch( const ToolError& e )
-            {
-                if( e.errorClass == ErrorClass::Engine )
-                    pending = std::make_exception_ptr( ToolError( ErrorClass::Schema,
-                        "fractal_vectorizer_status is empty on this connection; the "
-                        "vectorizer registry/queue are TEMP objects scoped to the "
-                        "connection that created one (create a vectorizer on this "
-                        "session first). Underlying engine note: " + e.message ) );
-                else
-                    pending = std::current_exception();
-            }
-            std::rethrow_exception( pending );
+            // The vectorizer registry lives in the extension on the node that serves the call;
+            // fractal_vectorizer_list() returns one entry per vectorizer (same data as the tool).
+            return contents( uri, "application/json", parseJsonLenient( g_db->callScalar( "SELECT fractal_vectorizer_list()", {} ) ).dump( 2 ) );
         }
 
         throw ToolError( ErrorClass::Schema, "unknown resource uri '" + uri + "'" );

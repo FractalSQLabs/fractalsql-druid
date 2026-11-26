@@ -48,6 +48,17 @@ ADAPTER_OBJS := $(patsubst adapter/src/%.c,$(BUILD)/daemon/%.o,$(ADAPTER_SRCS))
 WARN    := -Wall -Wextra -Werror -std=gnu11
 CFLAGS  ?= -O2 -g
 
+# The precision contract (precision plan R3): the files that carry a
+# float path are built with contraction OFF and with the vectoriser
+# disabled, so the double accumulation in adapter/src/fsql_precision.h is
+# exactly what runs -- no fused multiply-add, no reassociated reduction.
+# The core archive is built with the same flags on the core's side.
+FSQ_PRECISION_FLAGS := -ffp-contract=off -fno-tree-vectorize
+# fractalsql_vector.c carries the SQL-visible distances/norms/dots;
+# fractalsql_index.c carries the verification cosine and the IVF maths.
+FSQ_PRECISION_FLAGS_fractalsql_vector := $(FSQ_PRECISION_FLAGS)
+FSQ_PRECISION_FLAGS_fractalsql_index  := $(FSQ_PRECISION_FLAGS)
+
 # make COVERAGE=1 / ASAN=1 / UBSAN=1: instrument the daemon (adapter
 # objects + fractalsqld.c), for build_test.sh
 # --coverage/--asan/--ubsan/--tsan.
@@ -114,7 +125,7 @@ $(BUILD)/daemon:
 	mkdir -p $@
 
 $(BUILD)/daemon/%.o: adapter/src/%.c | $(BUILD)/daemon
-	$(CC) -Wall -Wextra -Werror -O2 -g -fPIC $(HARDEN_C) $(FSQ_ARCH_FLAGS) -I../include -Iadapter/src $(FSQ_OPENSSL_CFLAGS) $(FSQ_SAN_FLAGS) -c -o $@ $<
+	$(CC) -Wall -Wextra -Werror -O2 -g -fPIC $(HARDEN_C) $(FSQ_ARCH_FLAGS) -I../include -Iadapter/src $(FSQ_OPENSSL_CFLAGS) $(FSQ_SAN_FLAGS) $(FSQ_PRECISION_FLAGS_$*) -c -o $@ $<
 
 # The daemon TU is compiled to an object next to the adapter objects
 # instead of on the link line, so its -coverage .gcno lands in

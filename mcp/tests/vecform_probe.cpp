@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Daniel Gardiner d/b/a FractalSQLabs
 //
 // Unit test for the vector wire format in src/db.h (vecform): the dimension field is 16 bits, so a longer vector must be
-// refused with a message that names the limit and never written with a truncated length (SECURITY_AUDIT.md 3.19).
+// refused with a message that names the limit and never written with a truncated length.
 #include "../src/db.h"
 
 #include <cstdio>

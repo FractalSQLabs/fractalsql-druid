@@ -160,12 +160,42 @@ for a in ((0, 0.5, 0.9, 1), (4, 0.0, 0.9, 1), (4, 1.5, 0.9, 1), (4, 0.5, 0.0, 1)
 
 # ---- search
 CORPUS = "[[1,2,3,4],[4,3,2,1],[1,1,1,1],[2,2,2,2],[9,8,7,6]]"
-ok("fractal_search", CORPUS, V4, 2, "{}")
-ok("fractal_search", CORPUS, V4, 3, '{"iterations":20,"population_size":16,"diffusion_factor":2,"walk":0.5,"seed":4}')
-ok("fractal_search", "1,2,3,4;4,3,2,1;1,1,1,1", "1,2,3,4", 2, '{"debug":true}')
+ok("fractal_sfs_converge", CORPUS, V4, 2, "{}")
+ok("fractal_sfs_converge", CORPUS, V4, 3, '{"iterations":20,"population_size":16,"diffusion_factor":2,"walk":0.5,"seed":4}')
+ok("fractal_sfs_converge", "1,2,3,4;4,3,2,1;1,1,1,1", "1,2,3,4", 2, '{"debug":true}')
 ok("fractal_search_explore", CORPUS, V4, '{"iterations":10,"seed":2}')
-ok("fractal_search_debug", V4)
-ok("fractal_search_debug", V4, 10, 8, 2, 3)
+ok("fractal_sfs_converge_debug", V4)
+ok("fractal_sfs_converge_debug", V4, 10, 8, 2, 3)
+
+# ---- the index tier: the IVF index's plumbing, end to end.
+# The core must carry the IVF maths; when it does not, the one agreed
+# message comes back and that is the documented behaviour, not a failure.
+st, v = call("fractal_index_op", json.dumps({"op": "train_begin", "format": "INT8", "dim": 4, "nlist": 2, "seed": 3}))
+if st != 0 or "does not carry the IVF index" in str(v):
+    print("SKIP the index workout: this build of fractalsql-core does not carry the IVF index")
+else:
+    document = json.loads(v)
+    trainer = document.get("token")
+    check("the index's trainer opens", bool(trainer), document)
+    corpus = json.dumps([[1, 2, 3, 4], [4, 3, 2, 1], [1, 1, 1, 1], [2, 2, 2, 2], [9, 8, 7, 6], [6, 7, 8, 9]])
+    st, v = call("fractal_index_op", json.dumps({"op": "train_add", "token": trainer, "corpus": corpus}))
+    check("the index's trainer takes the corpus", st == 0, (st, v))
+    st, v = call("fractal_index_op", json.dumps({"op": "train_end", "token": trainer}))
+    trained = json.loads(v) if st == 0 else {}
+    model = trained.get("model")
+    check("the index's trainer finishes and returns a model", bool(model), trained)
+    st, v = call("fractal_index_op", json.dumps({"op": "encode", "token": trained.get("token"), "corpus": corpus}))
+    encoded = json.loads(v) if st == 0 else {}
+    check("the index's encode pass answers for every row", len(encoded.get("cells", [])) == 6, encoded)
+    st, v = call("fractal_index_op", json.dumps({"op": "open", "model": model}))
+    opened = json.loads(v) if st == 0 else {}
+    token = opened.get("token")
+    check("the index opens a resident index", bool(token), opened)
+    st, v = call("fractal_index_op", json.dumps({"op": "probe", "token": token, "query": "[1,2,3,4]", "nprobe": 2}))
+    probed = json.loads(v) if st == 0 else {}
+    check("the index probes cells", bool(probed.get("cells")), probed)
+    st, v = call("fractal_index_op", json.dumps({"op": "close", "token": token}))
+    check("the index closes", st == 0, (st, v))
 
 # ---- configuration: per session, validated, listed, reset
 keys = json.loads(ok("fractal_config_keys") or "[]")

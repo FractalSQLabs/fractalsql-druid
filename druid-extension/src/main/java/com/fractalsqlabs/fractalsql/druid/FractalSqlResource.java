@@ -36,6 +36,7 @@ public class FractalSqlResource {
     private final FractalSqlAgents agents;
     private final ReasoningBridge reasoning;
     private final FractalSqlVectorizer vectorizer;
+    private final FractalSqlIndex index;
     private final FractalSqlEnterprise enterprise;
     private final FractalSqlSessions sessions;
 
@@ -45,6 +46,7 @@ public class FractalSqlResource {
             FractalSqlAgents agents,
             ReasoningBridge reasoning,
             FractalSqlVectorizer vectorizer,
+            FractalSqlIndex index,
             FractalSqlEnterprise enterprise,
             FractalSqlSessions sessions)
     {
@@ -52,6 +54,10 @@ public class FractalSqlResource {
         this.agents = agents;
         this.reasoning = reasoning;
         this.vectorizer = vectorizer;
+        this.index = index;
+        if (vectorizer != null) {
+            vectorizer.setIndex(index);
+        }
         this.enterprise = enterprise;
         this.sessions = sessions;
     }
@@ -348,6 +354,110 @@ public class FractalSqlResource {
                     .build();
         } catch (Exception e) {
             return error(400, "could not run the search: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The index tier: the native IVF index and the indexed search.
+     *
+     * <p>Body: {@code {"action": "create"|"rebuild"|"refresh"|"ensure"|"drop"|"info"|
+     * "list"|"candidates"|"search", ...}}.
+     *
+     * <p>These are the honest home of the index's operations on this host:
+     * they read a datasource and (for a build) write one, and a Druid SQL
+     * function cannot issue the queries and the MSQ writes they need.
+     */
+    @POST
+    @Path("/index")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response index(String body)
+    {
+        try {
+            @SuppressWarnings("unchecked")
+            final Map<String, Object> args = service.mapper().readValue(body, Map.class);
+            final String action = string(args, "action");
+            if (action == null) {
+                return error(400, "the request needs an \"action\"");
+            }
+            // the options arrive as a JSON object (the demo kits and the MCP send one); the index tier reads them as JSON text
+            final Object rawOptions = args.get("options");
+            final String options = rawOptions == null ? null
+                    : rawOptions instanceof String ? (String) rawOptions : service.mapper().writeValueAsString(rawOptions);
+            switch (action) {
+                case "create":
+                    return ok(index.create(
+                            string(args, "table"),
+                            string(args, "column"),
+                            options));
+                case "rebuild":
+                    return ok(index.rebuild(string(args, "name"), options));
+                case "refresh":
+                    return ok(index.refresh(string(args, "name")));
+                case "ensure":
+                    return ok(index.ensure(
+                            string(args, "table"),
+                            string(args, "column"),
+                            options));
+                case "drop":
+                    return ok(index.drop(string(args, "name")));
+                case "info":
+                    return ok(index.info(string(args, "name")));
+                case "list":
+                    return ok(Map.of("indexes", index.list()));
+                case "candidates":
+                    return ok(index.candidates(
+                            string(args, "table"),
+                            string(args, "column"),
+                            string(args, "query"),
+                            options));
+                case "search":
+                    return ok(index.search(
+                            string(args, "table"),
+                            string(args, "column"),
+                            string(args, "query"),
+                            integer(args, "k", 10),
+                            options));
+                default:
+                    return error(400, "no such index action: " + action);
+            }
+        } catch (IllegalArgumentException e) {
+            return error(400, e.getMessage());
+        } catch (IllegalStateException e) {
+            // the "no IVF index in this core" case, and every other refusal
+            // the daemon reports, reaches the caller verbatim
+            return error(400, e.getMessage());
+        } catch (Exception e) {
+            return error(500, "the index operation failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Split text into chunks (no model): body {@code {"text": ..., "chunk_size": n, "chunk_overlap": n, "chunk_mode":
+     * "paragraph"|"sentence"|"fixed"}}. Returns {@code {"chunks": [{no, start, end, text}]}}, the same chunks every FractalSQL host returns.
+     */
+    @POST
+    @Path("/chunk")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response chunk(String body)
+    {
+        try {
+            @SuppressWarnings("unchecked")
+            final Map<String, Object> args = service.mapper().readValue(body, Map.class);
+            final String text = string(args, "text");
+            if (text == null) {
+                return error(400, "the request needs a \"text\"");
+            }
+            return ok(Map.of("chunks", FractalSqlChunker.chunk(
+                    text,
+                    integer(args, "chunk_size", 800),
+                    integer(args, "chunk_overlap", 0),
+                    string(args, "chunk_mode"))));
+        } catch (IllegalArgumentException e) {
+            return error(400, e.getMessage());
+        } catch (Exception e) {
+            return error(500, "the chunking failed: " + e.getMessage());
         }
     }
 

@@ -71,3 +71,20 @@ results span 3 to 6 of the 20 clusters, at about the same latency. Both grow rou
 linearly with the number of stored vectors, as expected of two scans. The scripts
 write the dataset with MSQ batches, so loading is slower than querying: 5,000 vectors
 took about four minutes to load on this VM.
+
+## Index and precision benchmarks
+
+| Script | What it does |
+| --- | --- |
+| `index_head_to_head.py` | Builds the native IVF index over the `bench_vectors` datasource and races it against the exact scan: recall@10, median latency per query, build time, and the number of rows the index actually read. |
+| `precision_agreement.py` | Checks that the extension's distances are bit-identical to the reference cosine. |
+
+```bash
+python3 bench/index_head_to_head.py --n 20000 --dim 128
+python3 bench/precision_agreement.py
+```
+
+- Read **rows scanned** in the index result: it should be far below the datasource's row count. That is how you know the index, not a full scan, answered.
+- Read the **bit-identical share** in the precision result: it should be 1.0000.
+- Like the other scripts, they read `DRUID_URL` (the SQL API, default `http://localhost:8888`) and `DRUID_FRACTALSQL_URL` (the extension, default `http://localhost:8082`); `--url` and `--service` override them. Index builds are extension operations, so `index_head_to_head.py` needs the extension's URL.
+- If the script reports that the core does not carry the IVF index, update the extension; the script exits 0 and says so.

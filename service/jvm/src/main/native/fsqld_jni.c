@@ -42,7 +42,7 @@ struct fsq_fn {
 
 /* The string as real UTF-8, malloc'd (free() it). GetStringUTFChars returns JNI "modified UTF-8", which writes a character
  * outside the BMP as two 3-byte surrogates (CESU-8): not UTF-8, and a C consumer that takes it for UTF-8 (a path, a URL, a
- * model name) misreads it (SECURITY_AUDIT.md 3.28). Converted here from the UTF-16 code units. */
+ * model name) misreads it. Converted here from the UTF-16 code units. */
 static char *utf8_of(JNIEnv *env, jstring v)
 {
     const jsize n = (*env)->GetStringLength(env, v);
@@ -254,7 +254,7 @@ Java_com_fractalsqlabs_fractalsql_daemon_Native_open(JNIEnv *env, jclass cls, ji
     }
 
     {
-        /* the types array must cover every argument: the loop below reads nargs entries (SECURITY_AUDIT.md 3.27) */
+        /* the types array must cover every argument: the loop below reads nargs entries */
         if (!types || (*env)->GetArrayLength(env, types) < nargs) { free_args(h); free(h); return 0; }
         jint *t = (*env)->GetIntArrayElements(env, types, NULL);
         if (!t) { free_args(h); free(h); return 0; }

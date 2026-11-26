@@ -198,8 +198,20 @@ namespace fsqlmcp
                              { "value", asScalarJson( db.callScalar( "SELECT fractal_config_get(?)", { key } ) ) },
                              { "scope", "per-connection (THIS MCP session's dedicated connection)" } };
             } } );
+        // The description is set HERE, right after this tool's own push_back: it belongs to
+        // fractal_config_get, and a line further down it would land on the next tool instead.
         t.back().description = "Reads back a config key's resolved value on THIS session's connection (the wrapper over fractal_config_get). Secrets (reasoning_token, enterprise_ledger_key) are refused; "
             "they are never read back through any tool or resource.";
+
+        t.push_back( ToolSpec{ "fractal_config_keys", "Admin", ToolClass::Cheap,
+            {}, std::nullopt, false, true,
+            [&db]( const Json&, CallCtx& ) {
+                return Json{ { "keys", parseJsonStrict( db.callScalar( "SELECT fractal_config_keys()", {} ) ) } };
+            } } );
+        t.back().idempotentHint = true;
+        t.back().description = "Every config key the engine knows, as {name, type, session_overridable}: string, path, int, bool or enum "
+            "(agent_use_index is an enum: off, on, auto). Lets a caller discover the knobs instead of hard-coding them; every key is set per connection "
+            "with fractal_config_set.";
 
         t.push_back( ToolSpec{ "fractal_configure_reasoning", "Admin", ToolClass::Cheap,
             { Str("provider_url", false, "Chat endpoint URL (e.g. http://127.0.0.1:11434/v1/chat/completions for ollama, or an OpenAI-compatible /v1/chat/completions)."),

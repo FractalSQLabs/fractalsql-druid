@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The per-row, buffered and combining behaviour of the
- * {@code fractal_search} aggregate, driven directly.
+ * {@code fractal_search_distance} aggregate, driven directly.
  */
 public class AggregatorBehaviourTest {
 
@@ -164,8 +164,8 @@ public class AggregatorBehaviourTest {
     void factoryMetadata()
     {
         final FractalSearchAggregatorFactory f = new FractalSearchAggregatorFactory(null, "emb", Q);
-        assertEquals("fractal_search", f.getName());
-        assertEquals("fractal_search",
+        assertEquals("fractal_search_distance", f.getName());
+        assertEquals("fractal_search_distance",
                 new FractalSearchAggregatorFactory("", "emb", Q).getName());
         assertEquals(List.of("emb"), f.requiredFields());
         assertEquals(Double.BYTES, f.getMaxIntermediateSize());

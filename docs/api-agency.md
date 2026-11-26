@@ -75,7 +75,7 @@ Pick by the problem shape, not by the function name.
 | "Rebalance, and compare to the nearest historical allocation?" | `rebalance_sibling` | optimizer + trajectory search → LLM rationale | ✓ |
 | "Give me several distinct good portfolios, not just one?" (enterprise) | `diverse_portfolios` | multimodal optimizer → LLM tradeoff summary | ✓ |
 | "Which sub-agent should handle this incoming task?" | `route_task` | nearest-capability search + budget accounting → LLM rationale | ✓ |
-| "Which node should this workload land on (with vector refinement)?" | `schedule_workload` | `fractal_search` refine + nearest node → LLM rationale | ✓ |
+| "Which node should this workload land on (with vector refinement)?" | `schedule_workload` | `fractal_search_distance` refine + nearest node → LLM rationale | ✓ |
 | "Should I block this proposed action (is it near a known-bad state)?" | `outlier_intercept` | distance-to-bad-state safety barrier → LLM justification | ✓ |
 | "Triage a patient against a cohort + baseline→current drift" | `patient_deterioration_triage` | cohort search + trajectory drift → LLM triage | ✓ |
 | "Ask a natural-language question over my tables" | `data_analyst` | NL→SQL→execute → LLM analysis | ✓ |
@@ -271,6 +271,18 @@ finds the nearest capability. (2) Resolves the returned `doc_id` (the value of t
 [id-resolution mapping](#a-note-on-id-resolution). (3) Derives
 `confidence = 1/(1+distance)`, accounts `remaining_budget = budget − cost_per_route`.
 (4) `fractal_reason` writes a one-line routing rationale.
+
+**Searching through an index.** Step (1) scans the table exactly by default. With
+`druid.fractalsql.agent_use_index=on` (`true` still means `on`; `auto` scans exactly until this host calibrates an index) in the node's runtime properties, and a
+[`fractal_index`](api-discovery.md) on `cap_table.cap_emb_col` whose id column is `cap_id_col`, it searches through
+the index instead; every distance is still exact, and rows added after the build are scanned exactly. The setting is off by
+default because an index can, rarely, pick a different nearest row than the exact scan, and it is an operator setting: a
+query cannot turn it on. With no covering index, or an index keyed on a different column, the agent scans exactly.
+`fractal_agent_outlier_intercept` (cosine) and `fractal_agent_schedule_workload` follow the same rule. The setting takes
+`off` (the default), `on` and `auto`: `auto` uses an index only when it is `ready`, was calibrated to its target recall (an estimate from a
+sample of the rows, made at build time; the build options are `calibration_samples`, default 200, and `target_recall`, default 0.95) and the datasource
+has at least `agent_index_min_rows` rows; otherwise it scans exactly, as `off` does. The index registry is kept in a catalog datasource, so
+the indexes (and their calibration) survive a node restart and are seen by every broker.
 
 **Returns** a JSON document: `{"routed_to":..,"confidence":..,"remaining_budget":..,"rationale":".."}`.
 
@@ -650,8 +662,8 @@ warmup table with enough varied vectors to fill the window, or
 
 Use it for Sovereign-Edge node scheduling, or any "refine a task vector, then
 find the nearest capable node" workflow. Like [route_task](#route-task-fractal_agent_route_task)
-but with a `fractal_search` refinement step that route_task lacks: the "sniper
-search" in the abstract search space before the nearest-node lookup.
+but with a `fractal_search_distance` refinement step that route_task lacks: a per-row
+convergence toward the task vector in the abstract search space before the nearest-node lookup.
 
 **Inputs**
 
@@ -661,11 +673,11 @@ search" in the abstract search space before the nearest-node lookup.
 | `node_table` | `string` | (none) | your node/capability table |
 | `node_emb_col` | `string` | (none) | the embedding column in that table |
 | `node_id_col` | `string` | (none) | the column to return as the node id |
-| `iterations` | `int` | `30` | `fractal_search` refinement iterations |
-| `population` | `int` | `50` | `fractal_search` population size |
+| `iterations` | `int` | `30` | `fractal_search_distance` refinement iterations |
+| `population` | `int` | `50` | `fractal_search_distance` population size |
 | `k` | `int` | `5` | how many nearest nodes |
 
-**How it works.** (1) `fractal_search(task_vec, iterations, population, 2)`:
+**How it works.** (1) `fractal_search_distance(task_vec, iterations, population, 2)`:
 refines the task vector (diffusion factor 2). (2)
 `fractal_search_telemetry(node_table, node_emb_col, refined, 1)` for the nearest
 node. (3) Resolves the returned `doc_id` (the value of the identity column) to the named node
@@ -1094,6 +1106,9 @@ Embeds a query and performs a diverse Scout search over a datasource's embedding
 | `col` | `string` | (none) | the embedding column |
 | `population_size` | `int` | `10` | Scout population size |
 | `iterations` | `int` | `5` | SFS generations per search |
+| `meta_filter` | `string` | (none) | one equality test applied to the rows read, a column and a quoted value (anything else is refused), for example `"region" = 'eu'` |
+
+With `druid.fractalsql.agent_use_index` set to `on` and no `meta_filter` given, the nearest rows come through the index and the datasource is not read. The distances are the index's verified ones (see [the index](api-discovery.md)), the `result` is then `{"top_k": [{"doc_id", "dist"}], "used_index": true}` and `n_corpus` is null. A `meta_filter` always scans exactly. `table_name`, `vector_col` and `pop_size` are accepted as other spellings of `table`, `col` and `population_size`.
 
 `col` must hold vectors (a numeric `ARRAY`, CSV-of-floats text, or bracketed-JSON text), and
 its element width must match the configured embedding model's output dimension (768 for
@@ -1104,6 +1119,8 @@ non-vector column raises a clean error rather than crashing the host process.
 - `result`: The Scout search document: `dim`, `n_corpus`, `best_fit`, `best_point`,
   `top_k` and the final `population`.
 - `n_corpus`: How many rows were searched.
+- `used_index`: `true` when the rows came through an index, `false` for the exact scan.
+- `source_row_ids`: the ids of the rows the result is drawn from, best first: the values of `id_col` when you passed one (and, through an index, when the index was built with an id column), otherwise the row positions. Use these to cite a source.
 
 ### `fractal_sql_agent`
 
@@ -1292,8 +1309,10 @@ A reasoning-endpoint failure after the retrieval has run returns the retrieval p
 `reasoning_step_failed` (see [Partial results](#how-an-agent-is-called)), not a null answer.
 
 - `question`: The query, echoed back.
-- `retrieval`: The Scout search document, as text.
+- `retrieval`: The Scout search document, as text. Through an index (the same rule as `fractal_search_agent`, used only when no `meta_filter` is given) it is `{"top_k": [{"doc_id", "dist"}], "used_index": true}`.
 - `answer`: The synthesized text response from the LLM.
+- `used_index`: `true` when the retrieval came through an index, `false` for the exact scan.
+- `source_row_ids`: the ids of the retrieved rows, as for `fractal_search_agent`.
 
 ---
 

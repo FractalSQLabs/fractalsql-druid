@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * The native Druid aggregator behind {@code fractal_search(...)}.
+ * The native Druid aggregator behind {@code fractal_search_distance(...)}.
  *
  * <p><b>What it computes.</b> The FractalSQL core's SFS optimizer
  * refines a query vector into a projection; the refined point is
@@ -35,7 +35,7 @@ import java.util.Objects;
  * refined point and keep the best score.
  *
  * <p>The per-row value is therefore identical to the reference extension's
- * {@code fractal_search(vector, query)}: the cosine distance from the
+ * {@code fractal_search_distance(vector, query)}: the cosine distance from the
  * row's vector to the refined query point. This is an aggregate rather
  * than a native expression because it has to scan the column as a
  * corpus; it reports the minimum of those distances over the group --
@@ -82,7 +82,7 @@ public class FractalSearchAggregatorFactory extends AggregatorFactory {
         // getName() must never be null: the broker serialises this
         // factory to the data nodes, and a null name makes the
         // historical fail to deserialise the whole query.
-        this.name = (name == null || name.isEmpty()) ? "fractal_search" : name;
+        this.name = (name == null || name.isEmpty()) ? "fractal_search_distance" : name;
         this.columnName = columnName;
         this.refinedQuery = refinedQuery;
     }
@@ -485,7 +485,7 @@ public class FractalSearchAggregatorFactory extends AggregatorFactory {
      * form -- CSV or bracketed JSON -- is the interchange format the
      * core's own vector API uses, and it is the form a column that
      * holds a vector as text carries. This is the shape of a
-     * {@code fractal_search(vector, query)} call over a text vector.
+     * {@code fractal_search_distance(vector, query)} call over a text vector.
      */
     static double[] toDoubles(Object raw)
     {

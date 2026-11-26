@@ -84,6 +84,14 @@ err, out = call("fractal_vector_hamming_distance", a=qa if isinstance(qa, str) e
 check("vector_hamming_distance over quantized vectors", not err, out)
 err, out = call("fractal_periodogram", series=series, max_peaks=4)
 check("periodogram", not err, out)
+try:
+    pg = out if isinstance(out, dict) else json.loads(out)
+    pk = pg.get("power") or []
+    check("periodogram keys: freqs and power (no powers), the same length, at most max_peaks, descending power",
+          "freqs" in pg and "power" in pg and "powers" not in pg and len(pg["freqs"]) == len(pk) <= 4
+          and all(pk[i] >= pk[i + 1] for i in range(len(pk) - 1)), str(pg)[:200])
+except (ValueError, TypeError) as e:
+    check("periodogram document parses", False, str(e))
 
 err, out = call("fractal_optimize_portfolio", mu=[0.1, 0.2, 0.15, 0.05], cov=[0.1, 0.01, 0.0, 0.0, 0.01, 0.2, 0.0, 0.0, 0.0, 0.0, 0.15, 0.0, 0.0, 0.0, 0.0, 0.1], k=2)
 check("optimize_portfolio", not err, out)

@@ -16,7 +16,7 @@ which are service calls, and the Druid constraints behind those choices.
 | Extension JAR (Maven, Java 17 bytecode) | Registers the `fractal_*` functions and the extension's HTTP endpoints in Druid | `druid-extension/` |
 | JNI shim | Links the pure-C FractalSQL core into the Druid process, one payload per platform | `druid-extension/src/main/native/` |
 | `fractalsqld` | The daemon that holds the reasoning, embedding and ledger tiers and the session settings. Both a C and a JVM build exist; the JVM build is the one the packages and the container image ship. | `service/` |
-| MCP server | A C++ server that exposes 78 tools over Druid's SQL API and the extension's endpoints | `mcp/` |
+| MCP server | A C++ server that exposes 108 tools over Druid's SQL API and the extension's endpoints | `mcp/` |
 | Demo stack | ZooKeeper, coordinator (also the overlord), broker, historical, middle manager, router and `fractalsqld` in Docker | `docker/` |
 | Demo runner | Druid's client for the demo suite, since Druid has no command-line SQL client | `demo/run_demo.py` |
 
@@ -45,7 +45,7 @@ too: their core symbols are not in the Community archive.
 A vector argument is a Druid `ARRAY` column or the core's text form; a
 vector result is the text form (see 3.3).
 
-`fractal_search` sits outside that table. It scans a column as a corpus, so
+`fractal_search_distance` sits outside that table. It scans a column as a corpus, so
 it is an aggregate, not a per-row expression.
 
 ---
@@ -204,7 +204,7 @@ interchangeable:
 
 | | Native expression | Druid aggregate |
 | --- | --- | --- |
-| Used for | the 68 registered functions | `fractal_search` |
+| Used for | the registered functions | `fractal_search_distance` |
 | Evaluated | per row, in the projection | once per group |
 | Needs a `GROUP BY` | no | yes |
 | `ORDER BY` on the result | works directly | works (it is an aggregate over a grouping key) |
@@ -227,7 +227,7 @@ Druid 38:
   non-time column", and a subquery does not help, since the restriction is on
   the scan.
 
-So: rank with an aggregate (`fractal_search` is the aggregate for this
+So: rank with an aggregate (`fractal_search_distance` is the aggregate for this
 reason), and compute per row with a native expression.
 
 ### 3.3 Vectors travel as text
@@ -329,7 +329,7 @@ the worst failure mode this design has.
 ## 5. Known limits
 
 - **Multi-row groups.** `GROUP BY "id"` (one group per row) works for the
-  `fractal_search` aggregate. `GROUP BY "grp"` (several rows per group)
+  `fractal_search_distance` aggregate. `GROUP BY "grp"` (several rows per group)
   returns the value the group's slot was initialised to: Druid's GroupBy
   engine does not fold a group's rows for that aggregator factory, even
   though the combining factory and combiner are both provided. The native
@@ -345,16 +345,15 @@ the worst failure mode this design has.
   least twice that many samples in the series, even though the header in
   `include/fractalsql_sql.h` says "window >= 16". A core error surfaces as
   `NaN` in a numeric result and as `null` in a JSON document.
-- **Functions with no Druid shape.** A few functions have no counterpart
-  here, and are not documented as available: `fractal_optimize_subset` (it
-  needs a caller-supplied objective, which the core takes as a callback and a
-  Druid expression cannot be; the portfolio family and the `allocate` agent
-  are the available shape), the named feature store
-  (`fractal_store_morphology`, `fractal_mine_topology_negatives`: a Druid
-  segment is immutable, so a feature store is a datasource written with an
-  ordinary MSQ write, and the telemetry search is its nearest-neighbour
-  read), and `fractal_vector_from_float8_array` /
-  `fractal_vector_to_float8_array` (Druid has no float8-array type).
+- **Functions with no Druid shape.** `fractal_vector_from_float8_array` and
+  `fractal_vector_to_float8_array` are not available: Druid has no float8-array
+  type.
+- **The feature store is a datasource.** A Druid segment is immutable, so
+  `fractal_store_morphology` appends a row to the `fractalsql_feature_store`
+  datasource with an MSQ write, and the newest row of a `doc_id` is its vector.
+  `fractal_mine_topology_negatives` reads the datasource back and ranks it. A
+  write takes as long as an MSQ task, so use it for curated examples, not for a
+  stream of vectors.
 - **Version lock.** The extension's SPI and SQL bridge use Druid internal
   APIs (`SqlBindings`, `SqlOperatorConversion`, `ExprMacroTable`,
   `ExpressionModule.addExprMacro`), which carry no versioning guarantee. The

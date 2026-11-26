@@ -71,6 +71,15 @@ namespace fsqlmcp
             "background worker in any engine, by design. Each batch is one MSQ INSERT; failed rows are counted "
             "and stay pending for the next run.";
 
+        t.push_back( ToolSpec{ "fractal_vectorizer_status", "Vectorizer", ToolClass::Cheap,
+            {}, std::nullopt, false, true,
+            [&db]( const Json&, CallCtx& ) {
+                return parseJsonLenient( db.callScalar( "SELECT fractal_vectorizer_list()", {} ) );
+            } } );
+        t.back().idempotentHint = true;
+        t.back().description = "One entry per vectorizer on the node that serves the call: its id, source datasource, text and embedding columns, state "
+            "(enabled or paused) and the queue counts. The vectorizer registry lives in the extension on that node, so ask the node that created it.";
+
         return t;
     }
 }

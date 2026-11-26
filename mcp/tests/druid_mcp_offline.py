@@ -40,7 +40,7 @@ p.stdin.flush()
 
 tools = rpc(2, "tools/list")["result"]["tools"]
 by = {t["name"]: t for t in tools}
-check("78 tools are published", len(tools) == 78, len(tools))
+check("108 tools are published", len(tools) == 108, len(tools))
 check("every tool has an object input schema", all(t["inputSchema"].get("type") == "object" for t in tools))
 check("every tool declares its four hints", all({"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"} <= set(t["annotations"]) for t in tools))
 check("no parameter is published as a nullable union", not any(isinstance(v.get("type"), list) for t in tools for v in t["inputSchema"].get("properties", {}).values()))
@@ -71,10 +71,20 @@ reasoning = [t for t in tools if t["annotations"].get("secretHint")]
 check("the tools that reach a model carry secretHint", len(reasoning) == 21, len(reasoning))
 check("fractal_reason is open-world", by["fractal_reason"]["annotations"]["openWorldHint"])
 
-# tools with no Druid backing are absent, and the Druid forms are published
-for gone in ("fractal_search", "fractal_optimize_subset", "fractal_store_morphology", "fractal_mine_topology_negatives"):
-    check(gone + " is not published", gone not in by)
+# the Druid forms are published
+for here in ("fractal_optimize_subset", "fractal_store_morphology", "fractal_mine_topology_negatives"):
+    check(here + " is published", here in by)
 check("search_explore reads a datasource", {"table_name", "vector_col", "query"} <= set(props("fractal_search_explore")))
+check("the indexed search is published", "fractal_search" in by)
+check("the indexed search takes a table, a column, a query, k and options",
+      {"table", "column", "query", "k", "options"} <= set(props("fractal_search")))
+check("the index's management functions are published",
+      all(n in by for n in ("fractal_index_create", "fractal_index_rebuild", "fractal_index_drop",
+                            "fractal_index_info", "fractal_index_candidates", "fractal_index_refresh", "fractal_index_list", "fractal_index_ensure")))
+check("the chunker is published and read-only", "fractal_chunk_text" in by and by["fractal_chunk_text"].get("annotations", {}).get("readOnlyHint") is True)
+check("the search agent takes a meta_filter", "meta_filter" in props("fractal_search_agent"))
+check("the convergence function was renamed (the plain form and the trace form are both published)", "fractal_sfs_converge" in by and "fractal_sfs_converge_debug" in by
+      and "fractal_search_debug" not in by)
 check("vectorizer_create takes an id column", "id_col" in props("fractal_vectorizer_create"))
 keydoc = by["fractal_config_set"]["inputSchema"]["properties"]["key"].get("description", "")
 check("config keys use the daemon's names", "reasoning_url" in keydoc and "t2s_max_attempts" in keydoc and "http_url" not in keydoc, keydoc)

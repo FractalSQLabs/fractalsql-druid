@@ -6,7 +6,7 @@
  * fractalsqld function bodies: Stochastic Fractal Search.
  *
  * SQL surface
- *   fractal_search(vector_csv, query_csv, k, params) -> JSON STRING
+ *   fractal_sfs_converge(vector_csv, query_csv, k, params) -> JSON STRING
  *
  *     vector_csv  corpus of stored vectors:
  *                   '[[v11,v12,...],[v21,...],...]'
@@ -64,7 +64,7 @@
 #include "fractalsql_enterprise.h" /* fractal_enterprise_lib_loaded/fractal_ledger_write_kind2/_sha256 */
 
 /* The covariance matrix is n*n doubles: the asset count is bounded (8192 is 512 MiB of matrix) so that n*n and n*n*8 cannot wrap a
- * size_t, whatever the input's length limits happen to be (SECURITY_AUDIT.md 3.15). */
+ * size_t, whatever the input's length limits happen to be. */
 #define FSQ_MAX_ASSETS ((size_t) 8192)
 static inline int fsq_cov_cells_ok(size_t n_assets, size_t cov_n) { return n_assets <= FSQ_MAX_ASSETS && cov_n == n_assets * n_assets; }
 
@@ -174,7 +174,7 @@ sfs_copy_result(sfs_ctx *c, const char *json, size_t len, char *error)
 
 /* ------------------------------------------------------------------ */
 /* Growable output buffer, shared by every Analytics/Portfolio UDF     */
-/* below that returns a JSON object (as opposed to fractal_search's    */
+/* below that returns a JSON object (as opposed to fractal_sfs_converge's    */
 /* fixed-lifetime buffer owned by the core ctx, or a scalar REAL       */
 /* return with no buffer at all). Allocated once in _init, grown as    */
 /* needed in the main call (portfolio's "weights" array scales with    */
@@ -455,7 +455,7 @@ json_get_int(const char *s, size_t slen, const char *key, int fallback)
 }
 
 /* Unsigned 64-bit variant, for session_id (the caller's own
- * CONNECTION_ID() by convention: see fractal_search's "session_id"
+ * CONNECTION_ID() by convention: see fractal_sfs_converge's "session_id"
  * params key and fractal_diversify_*'s explicit session_id argument).
  * No sign handling, since a session key is never negative, and no
  * fraction or exponent either: a session key is a plain integer. */
@@ -553,15 +553,15 @@ json_get_str(const char *s, size_t slen, const char *key,
 }
 
 /* ------------------------------------------------------------------ */
-/* UDF triad: fractal_search                                          */
+/* UDF triad: fractal_sfs_converge                                          */
 /* ------------------------------------------------------------------ */
 
 FRACTAL_EXPORT bool
-fractal_search_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
+fractal_sfs_converge_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 {
     if (args->arg_count != 4) {
         SFS_INIT_ERROR(message,
-            "fractal_search(vector_csv, query_csv, k, params): "
+            "fractal_sfs_converge(vector_csv, query_csv, k, params): "
             "expected 4 arguments, got %u", args->arg_count);
         return true;
     }
@@ -578,11 +578,11 @@ fractal_search_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
     args->arg_type[3] = STRING_RESULT;
 
     /* Only an integer constant can be checked here; any other k is
-     * coerced after init and checked again in fractal_search itself. */
+     * coerced after init and checked again in fractal_sfs_converge itself. */
     if (k_is_int && args->args[2] != NULL) {
         long long kv = *(long long *) args->args[2];
         if (kv < 1 || kv > 1000000) {
-            SFS_INIT_ERROR(message, "fractal_search: k must be 1..1000000");
+            SFS_INIT_ERROR(message, "fractal_sfs_converge: k must be 1..1000000");
             return true;
         }
     }
@@ -612,7 +612,7 @@ fractal_search_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 }
 
 FRACTAL_EXPORT void
-fractal_search_deinit(UDF_INIT *initid)
+fractal_sfs_converge_deinit(UDF_INIT *initid)
 {
     sfs_ctx *c = (sfs_ctx *) initid->ptr;
     if (c == NULL) return;
@@ -623,7 +623,7 @@ fractal_search_deinit(UDF_INIT *initid)
 }
 
 FRACTAL_EXPORT char *
-fractal_search(UDF_INIT *initid, UDF_ARGS *args, char *result,
+fractal_sfs_converge(UDF_INIT *initid, UDF_ARGS *args, char *result,
                unsigned long *length, char *is_null, char *error)
 {
     sfs_ctx *c = (sfs_ctx *) initid->ptr;
@@ -734,7 +734,7 @@ fractal_search(UDF_INIT *initid, UDF_ARGS *args, char *result,
         free(query); free(corpus);
         if (use_session) fractal_session_release_exclusive(session_id);
         SFS_INIT_ERROR(errbuf,
-            "fractal_search: params out of range (iterations %d..10000, "
+            "fractal_sfs_converge: params out of range (iterations %d..10000, "
             "population_size %d..10000, diffusion_factor %d..32)",
             iterations, pop_size, diff_factor);
         *error = 1; return NULL;
@@ -745,7 +745,7 @@ fractal_search(UDF_INIT *initid, UDF_ARGS *args, char *result,
         free(query); free(corpus);
         if (use_session) fractal_session_release_exclusive(session_id);
         SFS_INIT_ERROR(errbuf,
-            "fractal_search: search too large (iterations x population_size x "
+            "fractal_sfs_converge: search too large (iterations x population_size x "
             "diffusion_factor x dim exceeds %llu)", SEARCH_MAX_WORK);
         *error = 1; return NULL;
     }
@@ -821,8 +821,8 @@ fractal_search(UDF_INIT *initid, UDF_ARGS *args, char *result,
 }
 
 /* ------------------------------------------------------------------ */
-/* UDF triad: fractal_search_debug                                     */
-/*   fractal_search_debug(query_csv [, iterations [, population_size  */
+/* UDF triad: fractal_sfs_converge_debug                                     */
+/*   fractal_sfs_converge_debug(query_csv [, iterations [, population_size  */
 /*                              [, diffusion_factor [, seed]]]])        */
 /*     -> JSON STRING                                                  */
 /*                                                                    */
@@ -843,12 +843,12 @@ fractal_search(UDF_INIT *initid, UDF_ARGS *args, char *result,
 /* ------------------------------------------------------------------ */
 
 FRACTAL_EXPORT bool
-fractal_search_debug_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
+fractal_sfs_converge_debug_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 {
     unsigned int i;
     if (args->arg_count < 1 || args->arg_count > 5) {
         SFS_INIT_ERROR(message,
-            "fractal_search_debug(query_csv [, iterations [, population_size "
+            "fractal_sfs_converge_debug(query_csv [, iterations [, population_size "
             "[, diffusion_factor [, seed]]]]): expected 1 to 5 arguments, got %u",
             args->arg_count);
         return true;
@@ -876,7 +876,7 @@ fractal_search_debug_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 }
 
 FRACTAL_EXPORT void
-fractal_search_debug_deinit(UDF_INIT *initid)
+fractal_sfs_converge_debug_deinit(UDF_INIT *initid)
 {
     sfs_ctx *c = (sfs_ctx *) initid->ptr;
     if (c == NULL) return;
@@ -887,7 +887,7 @@ fractal_search_debug_deinit(UDF_INIT *initid)
 }
 
 FRACTAL_EXPORT char *
-fractal_search_debug(UDF_INIT *initid, UDF_ARGS *args, char *result,
+fractal_sfs_converge_debug(UDF_INIT *initid, UDF_ARGS *args, char *result,
                      unsigned long *length, char *is_null, char *error)
 {
     sfs_ctx *c = (sfs_ctx *) initid->ptr;
@@ -896,7 +896,7 @@ fractal_search_debug(UDF_INIT *initid, UDF_ARGS *args, char *result,
     double *query = NULL;
     size_t  dim = 0;
     /* The generation count used when the caller omits the argument.
-     * It matches the standard's fractal_search_debug signature
+     * It matches the standard's fractal_sfs_converge_debug signature
      * (iterations int4 DEFAULT 30), so an omitted argument walks the
      * same convergence depth on every engine. */
     int     iterations = 30;
@@ -939,7 +939,7 @@ fractal_search_debug(UDF_INIT *initid, UDF_ARGS *args, char *result,
         has_seed = true;
     }
 
-    /* Same bounds fractal_search applies, so an adversarial argument
+    /* Same bounds fractal_sfs_converge applies, so an adversarial argument
      * cannot drive a vastly oversized SFS allocation. The population
      * bound is the CORE's own (2..10000): a larger one is rejected by
      * the core with a generic "params out of range", so the same value
@@ -950,7 +950,7 @@ fractal_search_debug(UDF_INIT *initid, UDF_ARGS *args, char *result,
         diff_factor < 1 || diff_factor > 32) {
         free(query);
         SFS_INIT_ERROR(errbuf,
-            "fractal_search_debug: params out of range (iterations %d..10000, "
+            "fractal_sfs_converge_debug: params out of range (iterations %d..10000, "
             "population_size %d..10000, diffusion_factor %d..32)",
             iterations, pop_size, diff_factor);
         *error = 1; return NULL;
@@ -960,7 +960,7 @@ fractal_search_debug(UDF_INIT *initid, UDF_ARGS *args, char *result,
         (unsigned long long) diff_factor * (unsigned long long) dim > SEARCH_MAX_WORK) {
         free(query);
         SFS_INIT_ERROR(errbuf,
-            "fractal_search_debug: search too large (iterations x population_size x "
+            "fractal_sfs_converge_debug: search too large (iterations x population_size x "
             "diffusion_factor x dim exceeds %llu)", SEARCH_MAX_WORK);
         *error = 1; return NULL;
     }
@@ -1000,7 +1000,7 @@ fractal_search_debug(UDF_INIT *initid, UDF_ARGS *args, char *result,
 /* ------------------------------------------------------------------ */
 /* UDF triad: fractal_search_explore (Scout Mode)                            */
 /*                                                                    */
-/* Sniper (fractal_search) returns best_point + the top-k nearest     */
+/* Sniper (fractal_sfs_converge) returns best_point + the top-k nearest     */
 /* stored vectors. Scout disperses the SFS population across distinct */
 /* basins (walk=0 + min-distance-to-corpus fitness) and returns the   */
 /* full result JSON including the additive "population" array, one    */
@@ -1113,7 +1113,7 @@ fractal_search_explore(UDF_INIT *initid, UDF_ARGS *args, char *result,
     double walk        = json_get_double(params_s, params_len, "walk",             0.0);
 
     /* Optional "session_id", same convention and rationale as
-     * fractal_search's own session_id key (see its header comment). */
+     * fractal_sfs_converge's own session_id key (see its header comment). */
     unsigned long long session_id  = json_get_u64(params_s, params_len, "session_id", 0);
     bool                use_session = false;
     fsql_ctx           *search_ctx  = c->ctx;
@@ -1132,7 +1132,7 @@ fractal_search_explore(UDF_INIT *initid, UDF_ARGS *args, char *result,
          * the ordinary per-call ctx, per the convention above. */
     }
 
-    /* Same bounds fractal_search applies, and the same CORE population
+    /* Same bounds fractal_sfs_converge applies, and the same CORE population
      * cap (2..10000): a larger one is rejected by the core with a
      * generic "params out of range", so the same value is refused here,
      * with a reason, instead of travelling that far to fail. */
@@ -1149,7 +1149,7 @@ fractal_search_explore(UDF_INIT *initid, UDF_ARGS *args, char *result,
     }
 
     char core_params[320];
-    /* "seed" is forwarded for the same reason as in fractal_search: an
+    /* "seed" is forwarded for the same reason as in fractal_sfs_converge: an
      * absent seed leaves the core's own non-deterministic default in
      * place, and a pinned seed makes the scout population byte-stable
      * across calls. */
@@ -1181,7 +1181,7 @@ fractal_search_explore(UDF_INIT *initid, UDF_ARGS *args, char *result,
 
     if (use_session) {
         /* Copy out while the entry is still pinned: same lifetime
-         * reasoning as fractal_search's session path: the registry's
+         * reasoning as fractal_sfs_converge's session path: the registry's
          * long-lived ctx (and the result buffer it owns) can be freed
          * or overwritten independently of this initid, so return this
          * UDF instance's own copy. */
@@ -1217,7 +1217,7 @@ fractal_search_explore(UDF_INIT *initid, UDF_ARGS *args, char *result,
 /* The real minimum likely depends on the data's own characteristics  */
 /* rather than a fixed constant, so don't treat 24 as authoritative.  */
 /* the database server has no float8[] array type, so series is a CSV/JSON-array  */
-/* string, the same convention as fractal_search's                    */
+/* string, the same convention as fractal_sfs_converge's                    */
 /* vector_csv/query_csv arguments.                                    */
 /* ------------------------------------------------------------------ */
 
@@ -1500,7 +1500,7 @@ portfolio_audit_log_best_effort(const double *mu, const double *cov,
 /* weight (1 <= k <= n_assets). params (JSON, all keys optional):     */
 /* UDFs have no DEFAULT-argument syntax, so the optional        */
 /* seed/use_obl/diffusion_mode knobs are bundled into a trailing params */
-/* JSON blob instead, the same convention fractal_search already       */
+/* JSON blob instead, the same convention fractal_sfs_converge already       */
 /* established for its own tuning knobs:                                */
 /*   {"seed": <int, default 0>, "use_obl": <bool, default false>,    */
 /*    "diffusion_mode": <"gaussian"|"levy", default "gaussian">}      */
@@ -1577,7 +1577,7 @@ fractal_optimize_portfolio(UDF_INIT *initid, UDF_ARGS *args, char *result,
     params_len = (args->args[3] != NULL) ? args->lengths[3] : 2;
 
     /* The seed is read as UNSIGNED, like every other params-JSON seed in
-     * this file (fractal_search, fractal_search_explore). The core's
+     * this file (fractal_sfs_converge, fractal_search_explore). The core's
      * seed is a uint64_t, and json_get_int accepts a leading '-', so a
      * signed read turned {"seed":-1} into 18446744073709551615 -- a
      * silently widened value the caller never asked for. json_get_u64
@@ -2106,7 +2106,7 @@ fractal_version(UDF_INIT *initid, UDF_ARGS *args, char *result,
 /* session_id BIGINT as its first argument and operates through the    */
 /* connection-scoped registry in fractalsql_session.c instead. Pass    */
 /* CONNECTION_ID() by convention (sql/install_udf.sql documents        */
-/* this). fractal_search /                                             */
+/* this). fractal_sfs_converge /                                             */
 /* fractal_search_explore pick up the same session's ctx via an optional      */
 /* "session_id" key in their own params JSON, see those functions'     */
 /* header comments.                                                    */

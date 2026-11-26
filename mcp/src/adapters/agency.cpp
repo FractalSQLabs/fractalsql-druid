@@ -320,21 +320,22 @@ namespace fsqlmcp
         t.push_back( ToolSpec{ "fractal_search_agent", "Agency", ToolClass::Expensive,
             { Str("query",true,"Natural-language query."), Str("table_name",true,"Table to search."),
               Str("vector_col",true,"Embedding column."), Int("pop_size",false,"Scout population size.",50),
-              Int("iterations",false,"Scout iterations.",15) },
+              Int("iterations",false,"Scout iterations.",15),
+              Str("meta_filter",false,"Restrict the search to rows where column = 'value' (one equality test); empty means none.","") },
             std::nullopt, false, false,
-            [&db]( const Json& a, CallCtx& ) { return callAgent( db, "SELECT fractal_search_agent(?,?,?,?,?)",
+            [&db]( const Json& a, CallCtx& ) { return callAgent( db, "SELECT fractal_search_agent(?,?,?,?,?,?)",
                 { a.at("query").get<std::string>(), a.at("table_name").get<std::string>(),
                   a.at("vector_col").get<std::string>(), a.value( "pop_size", 50 ),
-                  a.value( "iterations", 15 ) } ); } } );
+                  a.value( "iterations", 15 ), a.value( "meta_filter", std::string() ) } ); } } );
         t.back().description = std::string( "End-to-end synthesis: embed a query -> Scout-search a table -> reason "
-            "over the matched rows' REAL content (never raw vectors). Returns {answer, source_doc_ids, "
+            "over the matched rows' REAL content (never raw vectors). Returns {answer, source_row_ids (the rows' ids), "
             "execution_time_ms}." ) + kReasoningAgent + kDataNote + kPartialNote;
         markReasoning( t.back() );
 
         t.push_back( ToolSpec{ "fractal_rag_agent", "Agency", ToolClass::Expensive,
             { Str("query",true,"Natural-language query."), Str("table_name",true,"Table to search."),
               Str("vector_col",true,"Embedding column."),
-              Str("meta_filter",false,"Reserved for a future metadata filter.","{}") },
+              Str("meta_filter",false,"Restrict retrieval to rows where column = 'value' (one equality test); empty or {} means none.","{}") },
             std::nullopt, false, false,
             [&db]( const Json& a, CallCtx& ) { return callAgent( db, "SELECT fractal_rag_agent(?,?,?,?)",
                 { a.at("query").get<std::string>(), a.at("table_name").get<std::string>(),

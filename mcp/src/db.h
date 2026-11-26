@@ -221,7 +221,7 @@ namespace fsqlmcp
                                        : static_cast<int>( ::recv( fd_, buf, sizeof buf, 0 ) );
                     if( n > 0 )
                     {
-                        // A body that never ends must not grow the heap until the process is killed (SECURITY_AUDIT.md 3.21).
+                        // A body that never ends must not grow the heap until the process is killed.
                         if( out.size() + static_cast<std::size_t>( n ) > kMaxDruidResponseBytes )
                             throw ToolError( ErrorClass::Connectivity, "the Druid response was larger than the "
                                              + std::to_string( kMaxDruidResponseBytes >> 20 ) + " MiB limit" );
@@ -359,7 +359,7 @@ namespace fsqlmcp
         }
 
         // The format's dimension field is 16 bits: a longer vector cannot be packed, and is refused rather than written with a
-        // truncated length (it then failed the length check on the way back, with no hint why) (SECURITY_AUDIT.md 3.19).
+        // truncated length (it then failed the length check on the way back, with no hint why).
         constexpr std::size_t kMaxDim = 0xffff;
 
         inline std::vector<std::uint8_t> pack( const std::vector<float>& v )
@@ -445,7 +445,9 @@ namespace fsqlmcp
                 { "fractal_agent_feedback_audit", { "/fractalsql/agent/feedback_audit",
                     { "catalog_table", "emb_col", "query_vec", "warmup_table", "warmup_vec_col", "warmup_count", "k" } } },
                 { "fractal_search_agent", { "/fractalsql/agent/search_agent",
-                    { "query", "table_name", "vector_col", "pop_size", "iterations" } } },
+                    { "query", "table_name", "vector_col", "pop_size", "iterations", "meta_filter" } } },
+                { "fractal_chunk_text", { "/fractalsql/chunk",
+                    { "text", "chunk_size", "chunk_overlap", "chunk_mode" } } },
                 { "fractal_rag_agent", { "/fractalsql/agent/rag_agent",
                     { "query", "table_name", "vector_col", "meta_filter" } } },
                 { "fractal_agent_plan_explore", { "/fractalsql/agent/plan_explore",
@@ -546,6 +548,8 @@ namespace fsqlmcp
                 return routeCall( "fractal_search_explore_table", binds );
             if( fn.rfind( "fractal_vectorizer_", 0 ) == 0 )
                 return vectorizerCall( fn, binds );
+            if( fn.rfind( "fractal_index_", 0 ) == 0 || fn == "fractal_search" )
+                return indexCall( fn, binds );
             const auto it = druidroutes::table().find( fn );
             if( it != druidroutes::table().end() )
                 return routeCall( fn, binds );
@@ -762,7 +766,7 @@ namespace fsqlmcp
         }
 
         // A bound that must be a finite number, as an integer: casting NaN or an out-of-range double to int64 is undefined
-        // behaviour, and a string bound to a limit parameter used to reach it (SECURITY_AUDIT.md 3.20).
+        // behaviour, and a string bound to a limit parameter used to reach it.
         static std::int64_t intOf( const SqlValue& v, const char* what )
         {
             const double n = numberOf( v );
@@ -914,6 +918,8 @@ namespace fsqlmcp
                 }
                 if( !body.contains( "id_column" ) ) body[ "id_column" ] = "id";
             }
+            else if( fn == "fractal_vectorizer_list" )
+                body = Json{ { "action", "list" } };
             else if( fn == "fractal_vectorizer_process_queue" )
                 body = Json{ { "action", "process_queue" }, { "batch_size", bindToJson( binds.at( 0 ) ) } };
             else
@@ -924,6 +930,62 @@ namespace fsqlmcp
             const druidhttp::Response r = druidhttp::request( svc_, "POST", "/fractalsql/vectorizer", body.dump(), auth_,
                                                               cfg_.timeoutMs, cfg_.insecureTls );
             if( r.status != 200 ) { warnServiceFallback( r.status ); throw httpError( r.status, r.body, "the vectorizer call" ); }
+            return r.body;
+        }
+
+        // The index tier: the extension serves the index's operations as an
+        // endpoint, because they read a datasource and (for a build) write
+        // one -- a Druid SQL function cannot issue the queries and the MSQ
+        // writes they need.
+        SqlValue indexCall( const std::string& fn, const std::vector<SqlValue>& binds )
+        {
+            Json body = Json::object();
+            if( fn == "fractal_search" )
+            {
+                body = Json{ { "action", "search" }, { "table", bindToJson( binds.at( 0 ) ) },
+                             { "column", bindToJson( binds.at( 1 ) ) },
+                             { "query", bindToJson( binds.at( 2 ) ) },
+                             { "k", bindToJson( binds.at( 3 ) ) } };
+                if( binds.size() > 4 && std::holds_alternative<std::string>( binds[ 4 ] ) )
+                    body[ "options" ] = std::get<std::string>( binds[ 4 ] );
+            }
+            else if( fn == "fractal_index_create" )
+            {
+                body = Json{ { "action", "create" }, { "table", bindToJson( binds.at( 0 ) ) },
+                             { "column", bindToJson( binds.at( 1 ) ) } };
+                if( binds.size() > 2 && std::holds_alternative<std::string>( binds[ 2 ] ) )
+                    body[ "options" ] = std::get<std::string>( binds[ 2 ] );
+            }
+            else if( fn == "fractal_index_ensure" )
+            {
+                body = Json{ { "action", "ensure" }, { "table", bindToJson( binds.at( 0 ) ) },
+                             { "column", bindToJson( binds.at( 1 ) ) } };
+                if( binds.size() > 2 && std::holds_alternative<std::string>( binds[ 2 ] ) )
+                    body[ "options" ] = std::get<std::string>( binds[ 2 ] );
+            }
+            else if( fn == "fractal_index_rebuild" )
+            {
+                body = Json{ { "action", "rebuild" }, { "name", bindToJson( binds.at( 0 ) ) } };
+                if( binds.size() > 1 && std::holds_alternative<std::string>( binds[ 1 ] ) )
+                    body[ "options" ] = std::get<std::string>( binds[ 1 ] );
+            }
+            else if( fn == "fractal_index_candidates" )
+            {
+                body = Json{ { "action", "candidates" }, { "table", bindToJson( binds.at( 0 ) ) },
+                             { "column", bindToJson( binds.at( 1 ) ) },
+                             { "query", bindToJson( binds.at( 2 ) ) } };
+                if( binds.size() > 3 && std::holds_alternative<std::string>( binds[ 3 ] ) )
+                    body[ "options" ] = std::get<std::string>( binds[ 3 ] );
+            }
+            else
+            {
+                const std::string action = fn.substr( std::strlen( "fractal_index_" ) );
+                body = Json{ { "action", action } };
+                if( !binds.empty() ) body[ "name" ] = bindToJson( binds.at( 0 ) );
+            }
+            const druidhttp::Response r = druidhttp::request( svc_, "POST", "/fractalsql/index", body.dump(), auth_,
+                                                              cfg_.timeoutMs, cfg_.insecureTls );
+            if( r.status != 200 ) { warnServiceFallback( r.status ); throw httpError( r.status, r.body, "the index call" ); }
             return r.body;
         }
 
@@ -1056,7 +1118,7 @@ namespace fsqlmcp
                 if( it != connections_.end() ) return it->second;
             }
             // The connect is blocking network I/O (up to the connect timeout): done outside the registry lock, so a slow
-            // Druid for one session does not stall every other session's lookup (SECURITY_AUDIT.md 3.10).
+            // Druid for one session does not stall every other session's lookup.
             auto c = std::make_shared<DbConnection>();
             c->setSession( key );
             c->connect( cfg_, kEngineVersionExpect );

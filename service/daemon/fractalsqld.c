@@ -8,6 +8,7 @@
 
 #define _GNU_SOURCE
 
+#include <limits.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -176,6 +177,16 @@ static int load_key(struct fsq_config *cfg) {
 
 
 /* Case-insensitive equality against a lower-case ASCII word. */
+/* strtol with a clamp to int: atoi() is undefined on overflow. A non-number reads as 0, as atoi did. */
+static int cfg_atoi_clamped(const char *v) {
+    char *e = NULL;
+    long  n = strtol(v, &e, 10);
+    if (e == v) return 0;
+    if (n > INT_MAX) return INT_MAX;
+    if (n < INT_MIN) return INT_MIN;
+    return (int) n;
+}
+
 static int cfg_word_is(const char *v, const char *word) {
     for (; *v && *word; v++, word++) {
         char c = *v;
@@ -231,9 +242,9 @@ static int load_config(const char *path, struct fsq_config *cfg) {
         } else if (strcmp(k, "log_file") == 0) {
             CFG_SET_STR(log_path);
         } else if (strcmp(k, "max_connections") == 0) {
-            cfg->max_connections = atoi(v);
+            cfg->max_connections = cfg_atoi_clamped(v);
         } else if (strcmp(k, "idle_timeout_secs") == 0) {
-            cfg->idle_timeout_secs = atoi(v);
+            cfg->idle_timeout_secs = cfg_atoi_clamped(v);
         } else if (strcmp(k, "allowed_uids") == 0) {
             char *save = NULL;
             for (char *tok = fsq_strtok_r(v, ",", &save); tok; tok = fsq_strtok_r(NULL, ",", &save)) {
@@ -1026,7 +1037,7 @@ static void core_fail(struct fsq_reply *rep, struct fsq_handle *h) {
 
 struct fsq_cache_entry {
     uint64_t token;
-    uint64_t peer_uid;  /* the authenticated uid that executed the call: a replay is for that uid only (SECURITY_AUDIT.md 3.11) */
+    uint64_t peer_uid;  /* the authenticated uid that executed the call: a replay is for that uid only */
     uint32_t status;
     int32_t  core_rc;
     uint32_t body_len;

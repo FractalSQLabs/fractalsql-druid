@@ -356,7 +356,7 @@ namespace fsqlmcp
             auto it = inflightSessions_.find( requestId );
             // Only an id that is in flight is remembered: the completion path is the one place an entry is erased,
             // so an id that never was (or already finished) would stay in the set for the life of the process
-            // (SECURITY_AUDIT.md 3.8). In-flight ids are bounded by the sessions' concurrency.
+            // In-flight ids are bounded by the sessions' concurrency.
             if( it == inflightSessions_.end() ) return;
             clientKey = it->second;
             cancelledIds_.insert( requestId );

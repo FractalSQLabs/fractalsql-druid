@@ -178,7 +178,7 @@ str_out_ensure(str_out_ctx *so, size_t need)
     if (need <= so->cap) return true;
     ncap = so->cap ? so->cap : 256;
     while (ncap < need) {
-        /* doubling must not wrap (to 0, which never reaches need) (SECURITY_AUDIT.md 3.16) */
+        /* doubling must not wrap (to 0, which never reaches need) */
         if (ncap > SIZE_MAX / 2) { ncap = need; break; }
         ncap *= 2;
     }
@@ -408,8 +408,9 @@ capture_t2s_env_fb(void)
     max_att = getenv("FRACTALSQL_TEXT_TO_SQL_MAX_ATTEMPTS");
     g_env_fb.max_attempts = 2;
     if (max_att && *max_att) {
-        int v = atoi(max_att);
-        if (v >= 1 && v <= 10) g_env_fb.max_attempts = v;
+        char *endp = NULL;
+        long  v = strtol(max_att, &endp, 10);   /* no overflow UB, unlike atoi */
+        if (endp != max_att && v >= 1 && v <= 10) g_env_fb.max_attempts = (int) v;
     }
 
     allowed = getenv("FRACTALSQL_TEXT_TO_SQL_ALLOWED_STATEMENTS");
@@ -1601,6 +1602,11 @@ t2s_has_exec_comment(const char *sql, size_t len)
         if (c == '/' && sc.pos + 1 < sc.len && sc.s[sc.pos + 1] == '*') {
             if (sc.pos + 2 < sc.len &&
                 (sc.s[sc.pos + 2] == '!' || sc.s[sc.pos + 2] == '+'))
+                return true;
+            /* MariaDB's own executable comment (M!): a Druid server treats it as plain text, but
+             * this file is shared with the MariaDB adapter and over-rejection is the gate's direction. */
+            if (sc.pos + 3 < sc.len &&
+                (sc.s[sc.pos + 2] == 'M' || sc.s[sc.pos + 2] == 'm') && sc.s[sc.pos + 3] == '!')
                 return true;
             /* plain comment: skip to its close, same loop shape as
              * t2s_skip_ws_comments */

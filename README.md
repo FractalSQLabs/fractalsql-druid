@@ -70,13 +70,13 @@ Depending on your role, you'll want to start in different places:
 Four tiers of primitives, some SQL functions and some service calls, composable into
 agents with plain SQL and application code: no server-side language required.
 
-- **Discovery**: diverse, mode-collapse-free retrieval: `fractal_search` (Sniper), `fractal_search_explore` (Scout).
+- **Discovery**: diverse, mode-collapse-free retrieval: `fractal_sfs_converge` (Sniper), `fractal_search_explore` (Scout), and the indexed `fractal_search` (nearest rows of a datasource, through the native IVF index built with `fractal_index_create`).
 - **Cognition**: LLM integration through `fractalsqld`: `fractal_reason` (Bedrock, Azure OpenAI, Vertex, Ollama), `fractal_embed`, `fractal_text_to_sql`.
 - **Agency**: self-correcting routines: the search/sql agents, plan/trajectory/loop-detection helpers; see the [Agent Recipes](docs/api-agency.md).
 - **Analytics**: fractal/dimension primitives: `fractal_dimension_dfa`, `fractal_dimension_boxcount`, `fractal_optimize_portfolio`, and more.
 
 Plus Druid-native plumbing: vectors as a Druid `ARRAY` column,
-`fractal_search()` as a Druid SQL aggregate over that column, the
+`fractal_search_distance()` as a Druid SQL aggregate over that column, the
 `fractal_vectorizer` embedding pipeline, and the tamper-evident
 `fractal_ledger_*` audit surface. The full function-surface reference with
 runnable examples lives in the [docs](docs/) and the [demo kits](demo/).
@@ -110,7 +110,7 @@ enterprise ledger.
 FractalSQL for Apache Druid ships as a **Druid extension**: a JAR that a
 Druid node loads through `druid.extensions.loadList`. The JAR carries a
 JNI shim linked against the pure-C FractalSQL core, so the per-row functions
-and the `fractal_search` aggregate run inside the Druid process.
+and the `fractal_search_distance` aggregate run inside the Druid process.
 
 ```bash
 # Build the extension and run the whole gate suite against a real Druid
@@ -123,7 +123,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ```sql
 -- Against the router's SQL endpoint on :8888
-SELECT "id", fractal_search("emb", '[1.0,0.0,0.0]') AS "dist"
+SELECT "id", fractal_search_distance("emb", '[1.0,0.0,0.0]') AS "dist"
 FROM "demo_vecs"
 GROUP BY "id"
 ORDER BY "dist" ASC
@@ -145,7 +145,7 @@ LIMIT 10;
 ```
 
 **How the tiers are served on Druid.** The per-row functions (68 of them) are Druid
-SQL expressions, and `fractal_search` is a Druid SQL aggregate. The operations that need
+SQL expressions, and `fractal_search_distance` is a Druid SQL aggregate. The operations that need
 to run a query or hold state (the agents, text-to-SQL, the vectorizer, the table-backed
 searches) are HTTP endpoints under `/fractalsql`. Reasoning, embedding and the enterprise
 ledger run in `fractalsqld`, a service that runs on the same host as the Druid brokers that call it. The details are in

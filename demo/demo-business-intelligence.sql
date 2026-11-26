@@ -821,7 +821,7 @@ SELECT fractal_reason(
 -- this as a DIRECTION to aim for, not a literal target coordinate.
 -- ---------------------------------------------------------------------------
 REPLACE INTO bi_sniper_result OVERWRITE ALL
-SELECT fractal_search_debug('-0.7,0.7,0.7', 50, 20, 2.0) AS "result"
+SELECT fractal_sfs_converge_debug('-0.7,0.7,0.7', 50, 20, 2.0) AS "result"
 PARTITIONED BY ALL;
 
 -- The ideal point, read out of the search's own document.

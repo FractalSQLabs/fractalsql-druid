@@ -21,10 +21,22 @@ FractalSQL ships in two editions, each unlocking more of the four capability tie
 
 ## 🔍 Tier 1: Discovery
 
-The foundation of FractalSQL is the **Stochastic Fractal Search (SFS)** engine, which treats vector search as a continuous optimization problem rather than an index lookup like standard HNSW or IVFFlat.
+FractalSQL has two ways to find rows. The **Stochastic Fractal Search (SFS)** engine treats
+the problem as continuous optimization and powers `fractal_sfs_converge` (Sniper) and
+the diverse **Scout** discovery; the **IVF index** gives fast, verified nearest-neighbour
+search over your stored rows, like an index lookup in standard HNSW or IVFFlat, with exact
+distances and a recall you can measure.
 
-### Sniper Search (`fractal_search`)
-Pure SFS convergence to the single best point minimizing cosine distance to a query over a unit box. It is a "precision" tool for finding the absolute global minimum. A per-row scalar: `fractal_search(vector_column, 'query-as-CSV')` in an `ORDER BY ... LIMIT k`.
+### Indexed Search (`fractal_search`, `fractal_index_*`)
+`fractal_index_create(datasource, column)` builds an index over a datasource's vector column (the cells are written into a companion datasource, because Druid has no DDL and no DML; the index needs a stable id column, `id_col`), and `fractal_search(datasource, column, query, k)` returns the `k` nearest rows to a query vector. With an index the search reads a few cells instead of every row, and it re-scores every candidate against the vector the index carries, so the distances are exact to FP16 precision — not FP32: the index only chooses which rows to look at, it does not approximate the answer. Without an index the same call scans the datasource and returns the same distances, only slower. The search reports the rows it read (`rows_scanned`), far below the datasource's row count, and it does **not** apply the Diversify repulsion layer. The nearest-row agents can search through an index too, off by default — see [Agency](api-agency.md). Building, refreshing and checking an index, and the search options, are in [Discovery](api-discovery.md#fractal_search-the-indexed-search).
+
+
+
+### Sniper Search (`fractal_sfs_converge`)
+Pure SFS convergence to the single best point minimizing cosine distance to a query over a unit box. It is a "precision" tool for finding the absolute global minimum, and reads no table: `fractal_sfs_converge('query-as-CSV')`.
+
+### Per-row distance (`fractal_search_distance`)
+Druid's per-row form of the convergence: `fractal_search_distance(vector_column, 'query-as-CSV')` scores each row in an `ORDER BY ... LIMIT k`. It is not the Sniper; it is the aggregate that scores stored vectors.
 
 ### Scout Discovery (`fractal_search_explore`)
 Scans a stored corpus and returns a diverse population of results: an SFS population search blended with **Maximal Marginal Relevance (MMR)** re-ranking, so the results cover the data's distinct basins of attraction instead of the "mode collapse" common in top-K search. An aggregate here — `SELECT fractal_search_explore(emb, 'query') FROM corpus` — folding the population into one JSON result (rather than returning one row per matched vector, as a set-returning function would).
@@ -71,7 +83,7 @@ The Agency tier composes the Discovery and Cognition primitives into autonomous 
 | `fractal_agent_rebalance_sibling` | optimizer + trajectory search → reasoning rationale | ✓ |
 | `fractal_agent_diverse_portfolios` (enterprise) | multimodal optimizer → reasoning tradeoff summary | ✓ |
 | `fractal_agent_route_task` | nearest-capability search + budget accounting → reasoning rationale | ✓ |
-| `fractal_agent_schedule_workload` | `fractal_search_debug` refine + nearest node → reasoning rationale | ✓ |
+| `fractal_agent_schedule_workload` | `fractal_sfs_converge_debug` refine + nearest node → reasoning rationale | ✓ |
 | `fractal_agent_outlier_intercept` | distance-to-bad-state safety barrier → reasoning justification | ✓ |
 | `fractal_agent_patient_deterioration_triage` | cohort search + trajectory drift → reasoning triage | ✓ |
 | `fractal_agent_data_analyst` | NL → SQL → reasoning analysis (SQL runs only with an explicit `auto_execute`) | ✓ |
@@ -153,7 +165,8 @@ A vector is stored either as an `ARRAY` column of numbers or as CSV/JSON text in
 (Detailed argument tables, defaults, and ranges are available in the **[Detailed API Reference](api-discovery.md)**.)
 
 **Discovery**
-- `fractal_search(vector, query)`: Sniper Mode convergence. $\rightarrow$ **[api-discovery.md](api-discovery.md)**
+- `fractal_sfs_converge(query, ...)`: Sniper Mode convergence. $\rightarrow$ **[api-discovery.md](api-discovery.md)**
+- `fractal_search_distance(vector, query)`: per-row distance (Druid aggregate form of the convergence). $\rightarrow$ **[api-discovery.md](api-discovery.md)**
 - `fractal_search_explore(emb, query, params?)`: Scout Mode diverse exploration (aggregate). $\rightarrow$ **[api-discovery.md](api-discovery.md)**
 - `fractal_search_telemetry(table, col, query, k)`: Ground-truth row retrieval. $\rightarrow$ **[api-discovery.md](api-discovery.md)**
 

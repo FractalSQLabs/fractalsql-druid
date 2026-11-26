@@ -56,7 +56,7 @@ public class FractalSqlDaemon {
         }
         // SHA-256 of the name, 62 bits of it: stable across restarts and nodes, and two names collide with probability
         // ~2^-62 where String.hashCode() (31 bits, not a hash that resists collisions) collided at a few tens of
-        // thousands of names, merging two sessions' state (SECURITY_AUDIT.md 3.23).
+        // thousands of names, merging two sessions' state.
         try {
             final byte[] d = java.security.MessageDigest.getInstance("SHA-256")
                     .digest(name.getBytes(java.nio.charset.StandardCharsets.UTF_8));

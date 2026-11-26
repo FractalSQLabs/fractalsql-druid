@@ -34,7 +34,7 @@
 -- ===========================================================================
 --
 --   Meta ............... fractal_edition, fractal_version
---   Search ............. fractal_search, fractal_search_debug,
+--   Search ............. fractal_search, fractal_sfs_converge_debug,
 --                        fractal_search_explore
 --   Cognition .......... fractal_reason, fractal_embed, the text-to-SQL
 --                        service, the data-analyst agent
@@ -201,7 +201,7 @@ SELECT COUNT(*) AS "corpus_rows" FROM "bmk_corpus";
 -- Sniper Search: the one search that is a SQL function. It is an
 -- aggregate, so it needs a GROUP BY -- one group per row of the
 -- corpus -- and the ordering is the aggregate's.
-SELECT "id", fractal_search("emb", '-0.574830,0.091362,-0.501643,0.602100,-0.614825,-0.416330,-0.627688,-0.205005') AS "dist"
+SELECT "id", fractal_search_distance("emb", '-0.574830,0.091362,-0.501643,0.602100,-0.614825,-0.416330,-0.627688,-0.205005') AS "dist"
 FROM "bmk_corpus"
 GROUP BY "id"
 ORDER BY "dist" ASC
@@ -211,7 +211,7 @@ LIMIT 3;
 -- count, the population size and the diffusion factor named by the
 -- caller.
 REPLACE INTO bmk_sfs OVERWRITE ALL
-SELECT fractal_search_debug('-0.574830,0.091362,-0.501643,0.602100,-0.614825,-0.416330,-0.627688,-0.205005', 20, 50, 2) AS "debug"
+SELECT fractal_sfs_converge_debug('-0.574830,0.091362,-0.501643,0.602100,-0.614825,-0.416330,-0.627688,-0.205005', 20, 50, 2) AS "debug"
 FROM UNNEST(ARRAY[1]) AS t(x)
 PARTITIONED BY ALL;
 
@@ -332,7 +332,7 @@ SELECT fractal_diversify_enable();
 
 SELECT fractal_diversify_set_params('{"population_size": 8, "mmr_lambda": 0.5}');
 
-SELECT "id", fractal_search("emb", '-0.574830,0.091362,-0.501643,0.602100,-0.614825,-0.416330,-0.627688,-0.205005') AS "dist"
+SELECT "id", fractal_search_distance("emb", '-0.574830,0.091362,-0.501643,0.602100,-0.614825,-0.416330,-0.627688,-0.205005') AS "dist"
 FROM "bmk_corpus"
 GROUP BY "id"
 ORDER BY "dist" ASC

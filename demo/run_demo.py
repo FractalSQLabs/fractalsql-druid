@@ -318,15 +318,22 @@ def post_json(url, payload, timeout=300):
 
 
 def get_json(url, timeout=60):
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
-            body = response.read().decode("utf-8", "replace")
-            status = response.status
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")
-        status = exc.code
-    except urllib.error.URLError as exc:
-        raise DruidError("cannot reach {}: {}".format(url, exc.reason))
+    # A GET is safe to repeat, so a transient resolver or connection error (seen as "Temporary failure in name resolution" for a
+    # literal 127.0.0.1 on a loaded host) is retried a few times before it fails the kit. HTTP errors are answers, not retried.
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                body = response.read().decode("utf-8", "replace")
+                status = response.status
+            break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")
+            status = exc.code
+            break
+        except urllib.error.URLError as exc:
+            if attempt == 5:
+                raise DruidError("cannot reach {}: {}".format(url, exc.reason))
+            time.sleep(1 + attempt)
     try:
         parsed = json.loads(body) if body else None
     except ValueError:

@@ -118,7 +118,7 @@ public class PrivateHelpersTest {
     {
         final FractalSearchSqlAggregator agg = new FractalSearchSqlAggregator(
                 new FractalSqlConfig(() -> new Properties()), new FractalSqlCore());
-        assertEquals("FRACTAL_SEARCH", agg.calciteFunction().getName());
+        assertEquals("FRACTAL_SEARCH_DISTANCE", agg.calciteFunction().getName());
 
         final RexBuilder rb = rex();
         final RelDataType dbl = rb.getTypeFactory().createSqlType(SqlTypeName.DOUBLE);
@@ -153,8 +153,8 @@ public class PrivateHelpersTest {
         assertThrows(IllegalArgumentException.class, () -> call(a, "extractQuery", one,
                 rb.makeCall(SqlStdOperatorTable.PLUS, rb.makeExactLiteral(java.math.BigDecimal.ONE), rb.makeExactLiteral(java.math.BigDecimal.TEN))));
 
-        assertEquals("fractal_search", call(a, "outputName", S, (Object) null));
-        assertEquals("fractal_search", call(a, "outputName", S, ""));
+        assertEquals("fractal_search_distance", call(a, "outputName", S, (Object) null));
+        assertEquals("fractal_search_distance", call(a, "outputName", S, ""));
         assertEquals("d", call(a, "outputName", S, "d"));
     }
 

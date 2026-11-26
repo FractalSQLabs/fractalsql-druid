@@ -34,7 +34,7 @@ public class FunctionRegistryTest {
             Pattern.compile("^X\\(([a-z0-9_]+),\\s*(STR|INT|REAL),\\s*([rse])\\)\\s*$");
     /** The ported functions, minus the ones this extension registers elsewhere. */
     private static final List<String> REGISTERED_ELSEWHERE =
-            List.of("fractal_search");
+            List.of("fractal_search_distance");
     /**
      * The 'r' (pure) functions in the function registry that this extension does
      * not expose on the SQL surface, and why.
@@ -62,6 +62,8 @@ public class FunctionRegistryTest {
 
         NOT_PORTED.put("fractal_config_reset", "the session tier's reset; the extension keeps the overlay, "
                 + "but a reset has no place in a query's expression layer");
+        NOT_PORTED.put("fractal_sfs_converge", "the table-free convergence function is exposed through its "
+                + "tunable debug form (fractal_sfs_converge_debug); the plain form is the daemon's");
     }
     /** The kind column, mapped onto the extension's return types. */
     private static FractalFn.RetType retTypeOf(String kind)
@@ -95,6 +97,24 @@ public class FunctionRegistryTest {
                         + "needs its own accessor for the documents its functions return");
         DRUID_ADDITIONS.put("fractal_json_text",
                 "the same accessor, for the string-valued fields");
+        DRUID_ADDITIONS.put("fractal_search_distance",
+                "the aggregate that used to carry the name fractal_search: the fleet's indexed "
+                        + "search took the name on 2026-11-18, and a Calcite operator cannot carry "
+                        + "two operators with one name");
+        for (String featureFunction : new String[]{"fractal_store_morphology", "fractal_mine_topology_negatives"}) {
+            DRUID_ADDITIONS.put(featureFunction,
+                    "the named feature store: its vectors live in a datasource (fractalsql_feature_store) that "
+                            + "an MSQ INSERT writes and a query reads, which the daemon's registry cannot do, so "
+                            + "the SQL names live in the extension, like the index's management functions");
+        }
+        for (String indexFunction : new String[]{"fractal_index_create", "fractal_index_rebuild",
+                "fractal_index_drop", "fractal_index_info", "fractal_index_candidates"}) {
+            DRUID_ADDITIONS.put(indexFunction,
+                    "the index's management functions: on Druid they are SERVICE operations (they read a "
+                            + "datasource and, for a build, write one, which a Druid SQL function cannot "
+                            + "do), so the SQL names live in the extension and the daemon's registry "
+                            + "carries only the plumbing function fractal_index_op");
+        }
     }
     /** Find the function registry, or null. */
     private static Path findRegistry()

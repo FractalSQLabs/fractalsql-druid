@@ -57,6 +57,7 @@ public class ServiceSweepTest {
     private static FractalSqlEnterprise enterprise;
     private static FractalSqlSessions sessions;
     private static FractalSqlVectorizer vectorizer;
+    private static FractalSqlIndex index;
     private static FractalSqlService service;
     private static FakeDaemon fake;
 
@@ -178,7 +179,8 @@ public class ServiceSweepTest {
         agents = new FractalSqlAgents(service, bridge, enterprise);
         sessions = new FractalSqlSessions();
         vectorizer = new FractalSqlVectorizer(service, bridge);
-        resource = new FractalSqlResource(service, agents, bridge, vectorizer, enterprise, sessions);
+        index = new FractalSqlIndex(service, daemon);
+        resource = new FractalSqlResource(service, agents, bridge, vectorizer, index, enterprise, sessions);
     }
 
     @AfterAll

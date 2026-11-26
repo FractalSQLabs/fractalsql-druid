@@ -123,7 +123,7 @@ class H(BaseHTTPRequestHandler):
         if mode == "noheaders":
             return self._raw(b"HTTP/1.1 200 OK")
         if mode == "endless":
-            # a body that never ends: the client must stop reading at its own limit (SECURITY_AUDIT.md 3.21)
+            # a body that never ends: the client must stop reading at its own limit
             try:
                 self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n[")
                 block = b"1," * 32768

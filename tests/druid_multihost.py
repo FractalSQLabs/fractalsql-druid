@@ -128,6 +128,11 @@ check("broker B: the same vectorizer is created in its own registry", st == 200 
 st, r = vpost(broker_a, {"action": "process_queue", "batch_size": 2})
 mine_a = [x for x in (r or {}).get("rows", []) if x.get("vectorizer_id") == ra.get("id")]
 check("broker A embeds two rows through its daemon", st == 200 and len(mine_a) == 2, (st, r))
+# Druid ingests the embeddings asynchronously: broker B can only see (and so skip) the rows broker A embedded once they have landed
+# in the companion datasource. Without this wait B reads an empty datasource and embeds all three rows again.
+end = time.time() + 180
+while time.time() < end and q(router, 'SELECT COUNT(*) FROM "%s_embeddings"' % VEC) != 2:
+    time.sleep(3)
 st, r = vpost(broker_b, {"action": "process_queue", "batch_size": 10})
 mine_b = [x for x in (r or {}).get("rows", []) if x.get("vectorizer_id") == rb.get("id")]
 check("broker B embeds only the row broker A left, through its own daemon", st == 200 and len(mine_b) == 1, (st, r))

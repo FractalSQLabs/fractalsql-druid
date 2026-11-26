@@ -35,7 +35,7 @@ public class EnterpriseTierTest {
         props.setProperty("druid.fractalsql.daemon_socket", fake.socket.toString());
         props.setProperty("druid.fractalsql.daemon_hmac_key_file", fake.keyFile.toString());
         props.setProperty("druid.fractalsql.daemon_timeout_ms", "5000");
-        // the destructive operations are off unless an operator enables them (SECURITY_AUDIT.md 3.12): these tests exercise them
+        // the destructive operations are off unless an operator enables them: these tests exercise them
         props.setProperty("druid.fractalsql.ledger.allow_destructive", "true");
         for (int i = 0; i + 1 < extra.length; i += 2) {
             props.setProperty(extra[i], extra[i + 1]);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Daniel Gardiner d/b/a FractalSQLabs
-"""An unauthenticated peer cannot make the daemon hold what it only declared (SECURITY_AUDIT.md 3.9).
+"""An unauthenticated peer cannot make the daemon hold what it only declared.
 
 usage: preauth_memory.py SOCKET DAEMON_PID
 Opens 16 connections, each declaring a 64 MiB payload and sending 100 bytes of it; the daemon's resident size must stay within

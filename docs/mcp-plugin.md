@@ -237,17 +237,18 @@ matrix even when the patch version moves.
 
 ## Tool catalog
 
-78 tools, grouped the same way the API docs group them. Optional
+108 tools, grouped the same way the API docs group them. Optional
 arguments carry their documented defaults in each tool's schema; vector
 arguments are plain JSON arrays of numbers at the MCP boundary and are
 converted to the core's text convention for you. Tool names
 are the SQL function names, unprefixed.
 
-### Discovery (13)
+### Discovery (14)
 
 | Tool | Purpose |
 | --- | --- |
-| `fractal_search_debug` | Same convergence with a full trajectory trace (`best_point`/`best_fit` per generation, particle paths). |
+| `fractal_sfs_converge` | The table-free convergence function: SFS toward the query direction, answering `{dim, population_size, best_point, best_fit}`. |
+| `fractal_sfs_converge_debug` | Same convergence with a full trajectory trace (`best_point`/`best_fit` per generation, particle paths). |
 | `fractal_search_explore` | Scout-mode DIVERSE population search (SFS + MMR) over a datasource's embedding column: the anti-mode-collapse primitive, run with no model needed. |
 | `fractal_search_telemetry` | Ground-truth K-nearest table rows by exact cosine distance; `doc_id` is the id-column value (or the scan position when none is given), `scan_pos` is the feedback handle. |
 | `fractal_hybrid_clinical_search` | The same, cohort-restricted: pass an explicit JSON array of ids to restrict the scan before ranking. |
@@ -257,6 +258,15 @@ are the SQL function names, unprefixed.
 | `fractal_detect_collapse` | Current diversity quotient (D_q); null when nothing has searched yet. |
 | `fractal_explain_result` | Session Diversify diagnostics `{dq, diversify_enabled, overhead_p99_us}`. |
 | `fractal_feedback_report` / `fractal_isolate_background` | Report dwell/positive/negative engagement on a prior result by its `scan_pos` handle. |
+| `fractal_search` | The indexed search: the IVF index's cells are probed, read and searched, and every candidate is verified before it is returned -- the distance is recomputed from the index's own FP16 copy of the vector, so it is exact to FP16 precision, not FP32. It does not apply Diversify repulsion. |
+| `fractal_index_create` | Builds the native IVF index over a datasource's vector column. The cells are written into a companion datasource with an MSQ INSERT (Druid has no DDL and no DML). |
+| `fractal_index_ensure` | Builds the index when there is none, folds in the added rows or rebuilds it when it is out of date, and leaves it alone when it is current; the reply names the action taken. |
+| `fractal_index_rebuild` | Rebuilds an index over the source's rows as they are now. |
+| `fractal_index_drop` | Drops the index. The cells stay in the companion datasource -- Druid cannot rewrite a datasource -- and are ignored from then on. |
+| `fractal_index_refresh` | Folds the rows added since the build into the cells without retraining. |
+| `fractal_index_info` | What the index is: its shape, the rows it covers, a status (ready, stale, empty or orphaned) and the advice for what to do next. |
+| `fractal_index_list` | The registered indexes with their status. |
+| `fractal_index_candidates` | The candidate row ids for a Scout pass over an indexed datasource: every row of the nearest cells, plus representatives from the other cells. |
 
 ### Cognition (4)
 
@@ -308,29 +318,33 @@ covered (there the reasoning call *is* the result), and an unconfigured
 
 | Agent | Returns |
 | --- | --- |
-| `fractal_search_agent` | `{answer, source_doc_ids, execution_time_ms}`: embed → Scout → reason over the matched rows' real content |
-| `fractal_rag_agent` | `{answer}`: the lighter single-turn RAG sibling |
+| `fractal_search_agent` | `{question, result, n_corpus, used_index}`: embed → Scout → reason over the matched rows' real content |
+| `fractal_rag_agent` | `{question, retrieval, answer, used_index}`: the lighter single-turn RAG variant; `meta_filter` takes one equality test |
 | `fractal_sql_agent` | `{generated_sql, execution_status, retry_count, result_json}`: `auto_execute` **defaults to false and is never defaulted to true** (see [Safety](#safety)) |
 | `fractal_agent_plan_explore` | One JSON document of MCTS-style branches `{branch_id, plan_trajectory, confidence_score}` |
 | `fractal_agent_trajectory_predict` | `{predicted_state_vector, projected_drift_delta, risk_threshold_exceeded}` |
 | `fractal_agent_detect_loop` | `{agent_id, dfa_exponent, is_loop_detected[, cycle_len, at_index]}`: SimHash + Brent + DFA drift |
 
-### Analytics (20)
+### Analytics (35)
 
 Fractal dimensions (`fractal_dimension_dfa` / `_boxcount` / `_drift`),
 time-series and topology (`fractal_change_point_detect`,
-`fractal_periodogram`, `fractal_spectrogram_entropy`,
+`fractal_chunk_text`, `fractal_periodogram`, `fractal_spectrogram_entropy`,
 `fractal_tda_persistence_diagram`),
 fingerprinting (`fractal_state_fingerprint`, `fractal_cycle_detect`),
-vector math (`fractal_vector_lp_distance`,
-`fractal_vector_quantize_int8`, `fractal_vector_quantize_binary`,
-`fractal_vector_hamming_distance`), domain geometry
+vector math (the canonical vector type `fractal_vector`,
+`fractal_vector_from_text`, `fractal_vector_to_json`; the algebra
+`fractal_vector_add`, `_sub`, `_scale`, `_normalize`, `_norm`, `_dims`,
+`_cosine_distance`, `_cosine_similarity`, `_l2_distance`, `_l2_squared`,
+`_negative_inner_product`; and the quantize and distance tools
+`fractal_vector_lp_distance`, `fractal_vector_quantize_int8`,
+`fractal_vector_quantize_binary`, `fractal_vector_hamming_distance`), domain geometry
 (`fractal_vascular_network`, `fractal_cortical_folding`,
 `fractal_nerve_plexus_metric`, `fractal_morphological_complexity`),
-and portfolio optimization (`fractal_optimize_portfolio`, and the Enterprise
+and portfolio optimization (`fractal_optimize_portfolio`, the value-weighted `fractal_optimize_subset`, and the Enterprise
 `_multimodal` / `_multimodal_pareto`).
 
-`fractal_search` is a Druid SQL aggregate over a column, so it has no MCP tool:
+`fractal_search_distance` is a Druid SQL aggregate over a column, so it has no MCP tool:
 the table-backed searches (`fractal_search_telemetry`, `fractal_search_explore`)
 cover that ground.
 
@@ -356,23 +370,24 @@ that honors them will prompt a human first, which is intended behavior.
 `_compact`, `_reset_soft` and `_reset_hard` also refuse, whoever calls them, unless the node's operator has set
 `druid.fractalsql.ledger.allow_destructive=true` (see [enterprise.md](enterprise.md)); `_flush` is not affected.
 
-### Vectorizer (5)
+### Vectorizer (6)
 
 `fractal_vectorizer_create` / `_pause` / `_resume` / `_drop` /
-`_process_queue`: the pull-based embedding sync; you drive the queue
+`_process_queue` and the read-only `_status`: the pull-based embedding sync; you drive the queue
 on your own schedule (there is no background worker, by design).
-`fractal_vectorizer_status` is exposed as a Resource instead (below).
+`fractal_vectorizer_status` returns one row per vectorizer (state, queue counts, last error); the same data is the Resource `fractalsql://vectorizer/status` (below).
 **Per-node registry:** the vectorizer registry and its queue live in the
 extension on the node that served the call, so create, process and monitor a
 vectorizer through the same node (see [Per-session, not
 global](#per-session-not-global)).
 
-### Admin (4)
+### Admin (5)
 
 | Tool | Purpose |
 | --- | --- |
 | `fractal_version` | `fractal_version()` + `fractal_edition()`: the one-line "is it alive" check. |
-| `fractal_config_set` / `fractal_config_get` | Thin wrappers over the engine's own `fractal_config_set` / `fractal_config_get` per-session surface. `destructiveHint`-flagged (a repointed `http_url` silently redirects every later reasoning call; old/new values of whatever changed are logged). Secrets are **never read back**. |
+| `fractal_config_set` / `fractal_config_get` | Thin wrappers over the engine's own `fractal_config_set` / `fractal_config_get` per-session surface. `destructiveHint`-flagged (a repointed `reasoning_url` silently redirects every later reasoning call; old/new values of whatever changed are logged). Secrets are **never read back**. |
+| `fractal_config_keys` | Every config key the engine knows, as `{name, type, session_overridable}`: a caller discovers the knobs instead of hard-coding them. |
 | `fractal_configure_reasoning` | One unified config tool covering the reasoning settings (`provider_url`, `embed_url`, `model`, `embed_model`, `allow_plaintext`, `think_mode`), adapter-translated here into `fractal_config_set` calls: in effect immediately, nothing to reload. **Never touches the provider token or any enterprise key.** |
 
 ## Resources

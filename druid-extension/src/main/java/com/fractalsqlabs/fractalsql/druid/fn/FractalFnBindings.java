@@ -76,7 +76,15 @@ public final class FractalFnBindings
             FractalAuditUnpackExprMacro.class,
             FractalAuditLogExprMacro.class,
             FractalSearchExploreExprMacro.class,
-            FractalSearchDebugExprMacro.class,
+            FractalSfsConvergeDebugExprMacro.class,
+            FractalIndexCreateExprMacro.class,
+            FractalIndexRebuildExprMacro.class,
+            FractalIndexDropExprMacro.class,
+            FractalIndexInfoExprMacro.class,
+            FractalIndexCandidatesExprMacro.class,
+            FractalStoreMorphologyExprMacro.class,
+            FractalMineTopologyNegativesExprMacro.class,
+            FractalSearchExprMacro.class,
             FractalDiversifyEnableExprMacro.class,
             FractalDiversifyDisableExprMacro.class,
             FractalDiversifySetParamsExprMacro.class,
@@ -84,7 +92,9 @@ public final class FractalFnBindings
             FractalDetectCollapseExprMacro.class,
             FractalFeedbackReportExprMacro.class,
             FractalIsolateBackgroundExprMacro.class,
-            FractalCycleDetectExprMacro.class
+            FractalCycleDetectExprMacro.class,
+            FractalOptimizeSubsetExprMacro.class,
+            FractalSfsConvergeExprMacro.class
     );
 
     public static final List<Class<? extends SqlOperatorConversion>> CONVERSIONS = List.of(
@@ -147,7 +157,15 @@ public final class FractalFnBindings
             FractalAuditUnpackOperatorConversion.class,
             FractalAuditLogOperatorConversion.class,
             FractalSearchExploreOperatorConversion.class,
-            FractalSearchDebugOperatorConversion.class,
+            FractalSfsConvergeDebugOperatorConversion.class,
+            FractalIndexCreateOperatorConversion.class,
+            FractalIndexRebuildOperatorConversion.class,
+            FractalIndexDropOperatorConversion.class,
+            FractalIndexInfoOperatorConversion.class,
+            FractalIndexCandidatesOperatorConversion.class,
+            FractalStoreMorphologyOperatorConversion.class,
+            FractalMineTopologyNegativesOperatorConversion.class,
+            FractalSearchOperatorConversion.class,
             FractalDiversifyEnableOperatorConversion.class,
             FractalDiversifyDisableOperatorConversion.class,
             FractalDiversifySetParamsOperatorConversion.class,
@@ -155,7 +173,9 @@ public final class FractalFnBindings
             FractalDetectCollapseOperatorConversion.class,
             FractalFeedbackReportOperatorConversion.class,
             FractalIsolateBackgroundOperatorConversion.class,
-            FractalCycleDetectOperatorConversion.class
+            FractalCycleDetectOperatorConversion.class,
+            FractalOptimizeSubsetOperatorConversion.class,
+            FractalSfsConvergeOperatorConversion.class
     );
 
     private FractalFnBindings()

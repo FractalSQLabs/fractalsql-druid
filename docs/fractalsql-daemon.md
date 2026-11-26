@@ -211,6 +211,10 @@ druid.fractalsql.daemon_timeout_ms=300000
 ```
 
 These are operator settings: a request's query context cannot change them.
+
+Three more operator settings: `druid.fractalsql.agent_use_index` (`off` by default; `on`; `auto` is for a calibrated index, which this host does not produce yet, so it scans exactly like `off`), and `druid.fractalsql.agent_context_row_bytes` (default 8192). With it on, it makes the nearest-row agents
+(`fractal_agent_route_task`, `fractal_agent_outlier_intercept`, `fractal_agent_schedule_workload`) search through a
+`fractal_index` when one covers the table and column (see [api-agency.md](api-agency.md#route-task-fractal_agent_route_task)).
 Which Druid processes need a daemon at all, and how a multi-host cluster lays
 them out, is in [Druid integration](druid-integration.md#25-where-the-daemon-runs).
 

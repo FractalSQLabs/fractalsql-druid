@@ -47,6 +47,8 @@ public class FractalSqlVectorizer {
         final long maxEmbedsPerWindow;
         final long rateWindowSecs;
         boolean paused;
+        /** option index_ensure (off by default): an index on the embeddings datasource is brought up to date at the next process_queue */
+        boolean indexEnsure;
         long windowStartMs;
         long windowAttempts;
         long done;
@@ -73,6 +75,13 @@ public class FractalSqlVectorizer {
     private final ReasoningBridge reasoning;
     private final Map<Integer, Entry> registry = new LinkedHashMap<>();
     private final AtomicInteger nextId = new AtomicInteger(1);
+    private volatile FractalSqlIndex index;
+
+    /** The index tier, for the index_ensure option (optional: without it the option does nothing). */
+    public void setIndex(FractalSqlIndex index)
+    {
+        this.index = index;
+    }
 
     @Inject
     public FractalSqlVectorizer(FractalSqlService service, ReasoningBridge reasoning)
@@ -166,6 +175,8 @@ public class FractalSqlVectorizer {
         final Entry entry = new Entry(nextId.getAndIncrement(), sourceTable, sourceColumn, embeddingColumn,
                 idColumn, target, longOption(options, "max_embeds_per_window", 0),
                 Math.max(1, longOption(options, "rate_window_secs", DEFAULT_WINDOW_SECS)));
+        final Object ie = options == null ? null : options.get("index_ensure");
+        entry.indexEnsure = Boolean.TRUE.equals(ie) || "true".equalsIgnoreCase(String.valueOf(ie));
         registry.put(entry.id, entry);
         return describe(entry);
     }
@@ -300,6 +311,20 @@ public class FractalSqlVectorizer {
         synchronized (this) {
             entries = new ArrayList<>(registry.values());
         }
+        // index_ensure: Druid ingests the embeddings asynchronously, so an index is brought up to date at the START of the next pass, once the
+        // earlier batch has landed. Only an index that already exists is touched, and a failure never fails the pass.
+        final FractalSqlIndex ix = index;
+        if (ix != null) {
+            for (Entry entry : entries) {
+                if (entry.indexEnsure && !entry.paused && ix.idColumnFor(entry.embeddingsTable, entry.embeddingColumn) != null) {
+                    try {
+                        ix.ensure(entry.embeddingsTable, entry.embeddingColumn, null);
+                    } catch (Exception e) {
+                        // best effort
+                    }
+                }
+            }
+        }
         for (Entry entry : entries) {
             if (entry.paused) {
                 continue;
@@ -361,7 +386,7 @@ public class FractalSqlVectorizer {
             }
             final String sql = "INSERT INTO \"" + key[0] + "\" SELECT CURRENT_TIMESTAMP AS \"__time\", "
                     + "CAST(FRACTAL_JSON_VALUE(t.j, '$.id') AS BIGINT) AS \"id\", "
-                    + "FRACTAL_JSON_VALUE(t.j, '$.embedding') AS \"" + key[1] + "\" FROM UNNEST(ARRAY["
+                    + "FRACTAL_JSON_TEXT(t.j, '$.embedding') AS \"" + key[1] + "\" FROM UNNEST(ARRAY["
                     + String.join(", ", documents) + "]) AS t(j) PARTITIONED BY ALL";
             service.submitWrite(sql, null);
             written.add(key[0]);
@@ -398,6 +423,7 @@ public class FractalSqlVectorizer {
         out.put("paused", entry.paused);
         out.put("max_embeds_per_window", entry.maxEmbedsPerWindow);
         out.put("rate_window_secs", entry.rateWindowSecs);
+        out.put("index_ensure", entry.indexEnsure);
         return out;
     }
 }

@@ -43,6 +43,7 @@ clang-tidy | service/adapter/src/fsql_audit_redact.h | clang-analyzer-core.NonNu
 # The logger's own vsnprintf: the va_list is started right before the call.
 clang-tidy | service/daemon/fractalsqld.c | clang-analyzer-valist.Uninitialized | 1 | accepted: the va_list is started immediately before the call
 clang-tidy | service/adapter/src/fractalsql_enterprise.c | clang-analyzer-valist.Uninitialized | 1 | accepted: the va_list is started immediately before the call
+clang-tidy | service/adapter/src/fractalsql_index.c | clang-analyzer-valist.Uninitialized | 1 | accepted: the va_list is started immediately before the call
 # The fatal-signal handler formats its line with snprintf, which is not async-signal-safe.
 # The finding is real: a signal that interrupts snprintf's own malloc can deadlock. The handler
 # runs once, on a fatal signal, and writes with write(2) afterwards, so the window is small.
@@ -59,10 +60,6 @@ clang-tidy | service/adapter/src/fractalsql_enterprise.c | bugprone-macro-parent
 clang-tidy | service/adapter/src/fractalsql_parse.c | bugprone-branch-clone | 1 | accepted: the two branches are the bracketed and the unbracketed form of the same separator
 # The CLI's switch has two commands that do the same thing.
 clang-tidy | service/cli/fsqlctl.c | bugprone-branch-clone | 1 | accepted: the two commands are aliases and deliberately do the same thing
-# atoi cannot report a conversion error. The two config values it reads are range-checked
-# afterwards, so a garbage value is refused at start; the finding is a hardening note.
-clang-tidy | service/daemon/fractalsqld.c | cert-err34-c | 2 | accepted: the values are range-checked after the conversion, so a garbage value is refused at start
-clang-tidy | service/adapter/src/fractalsql_textsql.c | cert-err34-c | 1 | accepted: the value is range-checked after the conversion
 # The feature-test macros are macros: naming them is the only way to ask for them.
 clang-tidy | service/daemon/fractalsqld.c | bugprone-reserved-identifier | 1 | accepted: the feature-test macro is how a POSIX program asks for the GNU extensions
 clang-tidy | service/cli/fsqlctl.c | bugprone-reserved-identifier | 1 | accepted: the feature-test macro is how a POSIX program asks for the POSIX extensions

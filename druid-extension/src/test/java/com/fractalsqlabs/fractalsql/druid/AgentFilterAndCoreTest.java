@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** SECURITY_AUDIT.md 3.5 (identifiers and the metadata filter in the agent tier) and 3.4 (the shared core context). */
+/** Identifiers and the metadata filter in the agent tier, and the shared core context. */
 public class AgentFilterAndCoreTest {
 
     @Test
@@ -89,7 +89,7 @@ public class AgentFilterAndCoreTest {
     void sessionIdsAreStableDistinctAndNeverTheNodes()
     {
         assertEquals(FractalSqlDaemon.sessionId("alpha"), FractalSqlDaemon.sessionId("alpha"));
-        // "Aa" and "BB" share String.hashCode(); they must not share an id (SECURITY_AUDIT.md 3.23)
+        // "Aa" and "BB" share String.hashCode(); they must not share an id
         assertEquals("Aa".hashCode(), "BB".hashCode());
         assertTrue(FractalSqlDaemon.sessionId("Aa") != FractalSqlDaemon.sessionId("BB"));
         final java.util.Set<Long> seen = new java.util.HashSet<>();

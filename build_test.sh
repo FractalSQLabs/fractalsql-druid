@@ -42,6 +42,23 @@
 set -u
 cd "$(dirname "$0")"
 ROOT="$PWD"
+
+# Resource fence. Run the whole harness inside a transient cgroup scope so no gate (a sanitizer build, the 9-database `multi`
+# lifecycle mode, an OOM sweep) can take the host down: memory is capped (swap off, so it OOM-kills inside the fence instead of
+# thrashing the guest), CPU leaves one core free, and the group sits at low CPU weight. Needs Linux + systemd --user; anywhere
+# else, or with FSQL_NO_CGROUP=1, it is skipped. Tune with FSQL_MEM_MAX (e.g. 3G; default 55% of RAM) and FSQL_CPU_QUOTA
+# (percent of one CPU; default (CPUs-1)*100).
+if [ -z "${FSQL_FENCED:-}" ] && [ "${FSQL_NO_CGROUP:-0}" != 1 ] && [ "$(uname -s)" = Linux ] \
+   && command -v systemd-run >/dev/null 2>&1 && systemctl --user is-system-running >/dev/null 2>&1; then
+  _ncpu="$(nproc 2>/dev/null || echo 1)"
+  _memkb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
+  _mem="${FSQL_MEM_MAX:-$(( _memkb * 55 / 100 / 1024 ))M}"
+  _cpu="${FSQL_CPU_QUOTA:-$(( (_ncpu > 1 ? _ncpu - 1 : 1) * 100 ))%}"
+  case "$_cpu" in *%) ;; *) _cpu="$_cpu%" ;; esac
+  export FSQL_FENCED=1
+  exec systemd-run --user --scope --quiet -p MemoryMax="$_mem" -p MemorySwapMax=0 -p CPUQuota="$_cpu" -p CPUWeight=20 \
+    -p TasksMax=4096 -- "$ROOT/build_test.sh" "$@"
+fi
 ART="${FSQL_TEST_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/fsql-druid-test.XXXXXX")}"
 mkdir -p "$ART"
 NICE="nice -n 15"
@@ -211,6 +228,7 @@ gate_02_build_jvm() {
 }
 
 gate_03_jvm_selftest() {
+  check "the settings table in the reasoning-setup guide names every configuration key" python3 -I tests/check_config_docs.py "$ROOT"
   check "server self-test (frames, HMAC vector, cache, config)" $NICE make -C service jvm-test
 }
 
@@ -299,7 +317,7 @@ gate_09_daemon_security() {
   daemon_conf "$D/s.conf" "max_connections = 3" "idle_timeout_secs = 2"
   daemon_start $DK "$D/s.conf" || { fail "JVM daemon did not start"; return; }
   check "security: refusals, limits and idle timeout" python3 service/tests/security.py "$D/d.sock" "$D/hmac.key"
-  # the socket carries no access for others, and the private directory it was bound in is gone (SECURITY_AUDIT.md 3.26)
+  # the socket carries no access for others, and the private directory it was bound in is gone
   check "the daemon socket is owner and group only, with no staging directory left" \
     bash -c "m=\$(stat -c %a '$D/d.sock' 2>/dev/null || stat -f %Lp '$D/d.sock'); [ \"\$m\" = 660 ] && [ -z \"\$(ls -d '$D'/.fsqld-* 2>/dev/null)\" ]"
   daemon_stop
@@ -322,20 +340,35 @@ gate_09_daemon_security() {
   check "text-to-SQL generate and review against a scripted provider" python3 service/tests/t2s_surfaces.py "$FSQLD_C" "$PLUGIN" "$D/hmac.key"
 }
 
+# The enterprise library the enterprise gates run against: the REAL one when include/ has it, otherwise the stand-in
+# (service/tests/mock_enterprise.c, built here). Sets ENT_USE (its path), ENT_KIND (real | mock) and ENT_CONF (extra daemon-conf words:
+# the stand-in is unsigned, so the signature requirement is switched off for it). The stand-in answers the same entry points but not the
+# real ledger's content, so the checks that need the real library test ENT_KIND.
+ENT_USE=""; ENT_KIND=real; ENT_CONF=""
+ent_resolve() {
+  if [ -f "$ENTLIB" ]; then ENT_USE="$ENTLIB"; ENT_KIND=real; ENT_CONF=""; return 0; fi
+  have cc || { fail "no enterprise library in include/ and no C compiler for the stand-in"; return 1; }
+  mkdir -p "$D/standin"
+  ENT_USE="$D/standin/ent.so"; ENT_KIND=mock; ENT_CONF="enterprise_require_signature = false"
+  [ -f "$ENT_USE" ] || cc -shared -fPIC -O1 -o "$ENT_USE" service/tests/mock_enterprise.c 2>"$D/standin/build.log" \
+    || { cat "$D/standin/build.log" >&2; fail "the stand-in enterprise library did not build"; return 1; }
+  return 0
+}
+
 gate_10_enterprise() {
-  [ -f "$ENTLIB" ] || { skip "no enterprise library in include/"; return; }
+  ent_resolve || return
   local kind
   for kind in $KINDS; do
-    daemon_conf "$D/e.conf" "enterprise_lib = $ENTLIB" "enterprise_ledger_path = $D/ledger.dat"
+    daemon_conf "$D/e.conf" "enterprise_lib = $ENT_USE" ${ENT_CONF:+"$ENT_CONF"} "enterprise_ledger_path = $D/ledger.dat"
     rm -f "$D"/ledger.dat*
     daemon_start "$kind" "$D/e.conf" || { fail "$kind daemon did not start"; continue; }
-    check "$kind: the signed enterprise library loads" ctl call fractal_ledger_flush i:1
+    check "$kind: the enterprise library ($ENT_KIND) loads" ctl call fractal_ledger_flush i:1
     check "$kind: audit_log writes" ctl call fractal_audit_log s:test_event 's:{"n":1}' i:1 s:ci
     check "$kind: the chain verifies" bash -c "FSQLCTL_SOCKET='$D/d.sock' FSQLCTL_KEY='$D/hmac.key' '$FSQLCTL' call fractal_ledger_verify i:1 | grep -q '\"ok\":true'"
     daemon_stop
   done
   # a tampered signature is refused; no library is dormant, not a crash
-  mkdir -p "$D/t"; cp "$ENTLIB" "$D/t/ent.so"; head -c 64 /dev/urandom > "$D/t/ent.so.sig"
+  mkdir -p "$D/t"; cp "$ENT_USE" "$D/t/ent.so"; head -c 64 /dev/urandom > "$D/t/ent.so.sig"
   daemon_conf "$D/t.conf" "enterprise_lib = $D/t/ent.so" "enterprise_ledger_path = $D/ledger2.dat"
   daemon_start $DK "$D/t.conf" || { fail "JVM daemon did not start"; return; }
   expect_fail "a tampered signature is refused" ctl call fractal_ledger_flush i:1
@@ -394,7 +427,7 @@ gate_12_mcp_build() {
   check "make the MCP server${SAN:+ ($SAN)}" $NICE make -C mcp $SANMAKE
   check "the MCP server reports its version" bash -c "mcp/fractalsql-druid-mcp --version | grep -q '^2\\.'"
   local n; n="$(mcp/fractalsql-druid-mcp --list-tools | wc -l)"
-  check "the tool table has 78 tools" test "$n" -eq 78
+  check "the tool table has 108 tools" test "$n" -eq 108
   check "the server binary has no database engine inside" bash -c "! strings mcp/fractalsql-druid-mcp | grep -q 'sqlite3_'"
 }
 
@@ -405,7 +438,7 @@ gate_13_mcp_locks() {
   check "the schema lock matches the published tool table" cmp "$tmp/schema.before" "$tmp/schema.after"
   cp mcp/.mcp-safety-annotations-lock "$tmp/safety.before"
   check "the safety-annotations lock is present and non-empty" test -s "$tmp/safety.before"
-  check "the manifest lists 78 tools" python3 -c "import json,sys; d=json.load(open('mcp/manifest.json')); n=len(d.get('tools',d)); sys.exit(0 if n==78 else 1)"
+  check "the manifest lists 108 tools" python3 -c "import json,sys; d=json.load(open('mcp/manifest.json')); n=len(d.get('tools',d)); sys.exit(0 if n==108 else 1)"
 }
 
 gate_14_mcp_contract() {
@@ -450,10 +483,10 @@ gate_30_enterprise_edges() {
   # The enterprise ledger's recovery and the signed library's loading, pushed through the cases a crash, a bad disk or a bad install makes:
   # every kind of malformed head file, a byte changed at many places in the chain, and a library, a signature, a temp directory or a ledger
   # path that is wrong. The daemon either answers afterwards or refuses cleanly; it never crashes.
-  [ -f "$ENTLIB" ] || { skip "no enterprise library in include/"; return; }
+  ent_resolve || return
   mock_start || { fail "mock provider did not start"; return; }
   local i n spec L="$D/edge-ledger.dat"
-  daemon_conf "$D/edge.conf" "enterprise_lib = $ENTLIB" "enterprise_ledger_path = $L"
+  daemon_conf "$D/edge.conf" "enterprise_lib = $ENT_USE" ${ENT_CONF:+"$ENT_CONF"} "enterprise_ledger_path = $L"
   rm -f "$D"/edge-ledger.dat* "$D"/pristine.*
   daemon_start c "$D/edge.conf" || { fail "daemon did not start (enterprise edges: fresh)"; mock_stop; return; }
   for i in 1 2 3 4 5 6; do ctl call fractal_audit_log s:edge "s:{\"i\":$i}" i:1 s:ci >/dev/null 2>&1; done
@@ -468,16 +501,16 @@ gate_30_enterprise_edges() {
   done
   # the ledger path itself
   mkdir -p "$D/edge-dir"; rm -rf "$D/edge-dir/"*
-  daemon_conf "$D/edge.conf" "enterprise_lib = $ENTLIB" "enterprise_ledger_path = $D/edge-dir"; edge_case "a ledger path that is a directory"
-  daemon_conf "$D/edge.conf" "enterprise_lib = $ENTLIB" "enterprise_ledger_path = /proc/no/such/ledger.dat"; edge_case "a ledger path in a missing directory"
-  daemon_conf "$D/edge.conf" "enterprise_lib = $ENTLIB" "enterprise_ledger_path = $D/$(printf 'x%.0s' $(seq 1 4300)).dat"; edge_case "a ledger path far too long"
+  daemon_conf "$D/edge.conf" "enterprise_lib = $ENT_USE" ${ENT_CONF:+"$ENT_CONF"} "enterprise_ledger_path = $D/edge-dir"; edge_case "a ledger path that is a directory"
+  daemon_conf "$D/edge.conf" "enterprise_lib = $ENT_USE" ${ENT_CONF:+"$ENT_CONF"} "enterprise_ledger_path = /proc/no/such/ledger.dat"; edge_case "a ledger path in a missing directory"
+  daemon_conf "$D/edge.conf" "enterprise_lib = $ENT_USE" ${ENT_CONF:+"$ENT_CONF"} "enterprise_ledger_path = $D/$(printf 'x%.0s' $(seq 1 4300)).dat"; edge_case "a ledger path far too long"
   cp "$D/pristine.dat" "$D/edge-open.dat"; chmod 0644 "$D/edge-open.dat"
-  daemon_conf "$D/edge.conf" "enterprise_lib = $ENTLIB" "enterprise_ledger_path = $D/edge-open.dat"; edge_case "a ledger file readable by everyone"
+  daemon_conf "$D/edge.conf" "enterprise_lib = $ENT_USE" ${ENT_CONF:+"$ENT_CONF"} "enterprise_ledger_path = $D/edge-open.dat"; edge_case "a ledger file readable by everyone"
   ln -sf "$D/pristine.dat" "$D/edge-link.dat"
-  daemon_conf "$D/edge.conf" "enterprise_lib = $ENTLIB" "enterprise_ledger_path = $D/edge-link.dat"; edge_case "a ledger path that is a symbolic link"
+  daemon_conf "$D/edge.conf" "enterprise_lib = $ENT_USE" ${ENT_CONF:+"$ENT_CONF"} "enterprise_ledger_path = $D/edge-link.dat"; edge_case "a ledger path that is a symbolic link"
   # the library, its signature and the temp directory the verified copy is made in
   local T="$D/lib"; rm -rf "$T"; mkdir -p "$T"
-  daemon_conf "$D/edge.conf" "enterprise_lib = $ENTLIB" "enterprise_ledger_path = $D/edge-t.dat"
+  daemon_conf "$D/edge.conf" "enterprise_lib = $ENT_USE" ${ENT_CONF:+"$ENT_CONF"} "enterprise_ledger_path = $D/edge-t.dat"
   edge_case "a missing temp directory" TMPDIR=/nonexistent/dir
   : > "$T/afile"; edge_case "a temp directory that is a file" TMPDIR="$T/afile"
   edge_case "a temp directory that is far too long" TMPDIR="/tmp/$(printf 'd%.0s' $(seq 1 4300))"
@@ -510,7 +543,7 @@ gate_30_enterprise_edges() {
   for extra in -1 0 1 3; do
     blk=$(( sz / 512 + extra )); [ "$blk" -lt 1 ] && blk=1
     rm -f "$D/edge-full.dat" "$D/edge-full.dat.head"; cp "$D/pristine.dat" "$D/edge-full.dat"; [ -f "$D/pristine.head" ] && cp "$D/pristine.head" "$D/edge-full.dat.head"
-    daemon_conf "$D/edge.conf" "enterprise_lib = $ENTLIB" "enterprise_ledger_path = $D/edge-full.dat"
+    daemon_conf "$D/edge.conf" "enterprise_lib = $ENT_USE" ${ENT_CONF:+"$ENT_CONF"} "enterprise_ledger_path = $D/edge-full.dat"
     DAEMON_WRAP="$D/fsize-wrap.sh"; edge_case "a ledger that cannot grow past $blk blocks" FSQL_WRAP_FSIZE="$blk"; DAEMON_WRAP=""
   done
   mock_stop
@@ -708,11 +741,97 @@ gate_39_mcp_cli() {
     env MCP_SERVER_EXE="$PWD/mcp/fractalsql-druid-mcp" MCP_HERE="$PWD/mcp" python3 -I mcp/tests/mcp_cli.py
 }
 
+# 45 precision: the precision contract of this host's SQL-visible distances
+# Every distance, norm and dot product
+# accumulates in DOUBLE, in a fixed sequential order, with no fused
+# multiply-add and no vectorised reduction, and is returned as a double;
+# there is ONE cosine implementation in the repo
+# (service/adapter/src/fsql_precision.h), so every SQL-visible cosine agrees
+# to the last bit. The driver (service/tests/test_precision.py) checks the
+# results against the same arithmetic in Python floats (IEEE double, no
+# FMA): bit for bit, plus the adversarial near-tie ranking, the
+# cross-function agreement and the float32 text round trip.
+#
+# It drives the daemon -- the SQL-visible functions of this host ARE the
+# daemon's function bodies -- so it needs no database and no Druid.
+gate_45_precision() {
+  have python3 || { skip "45 precision (no python3 on PATH)"; return; }
+  local kind
+  for kind in $KINDS; do
+    daemon_conf "$D/precision.conf"
+    if daemon_start "$kind" "$D/precision.conf"; then
+      check "$kind daemon: every SQL-visible distance is bit-identical to the sequential double reference"         python3 service/tests/test_precision.py "$D/d.sock" "$D/hmac.key"
+    else fail "$kind daemon did not start (precision)"; fi
+    daemon_stop
+  done
+}
+
+# 46 rename: the table-free convergence function was RENAMED
+# fractal_search -> fractal_sfs_converge (it runs SFS toward the query
+# direction; it is not a retrieval function), and there is NO alias: the
+# old call is refused with a message that names the new name. The debug
+# form is fractal_sfs_converge_debug. The indexed search is
+# fractal_search(table_name, vector_col, query, k, options_json).
+gate_46_rename() {
+  have python3 || { skip "46 rename (no python3 on PATH)"; return; }
+  local kind
+  for kind in $KINDS; do
+    daemon_conf "$D/rename.conf"
+    if daemon_start "$kind" "$D/rename.conf"; then
+      check "$kind daemon: fractal_sfs_converge runs the convergence search and the old fractal_search is refused by name"         python3 service/tests/test_rename.py "$D/d.sock" "$D/hmac.key" service/protocol/functions.def
+    else fail "$kind daemon did not start (rename)"; fi
+    daemon_stop
+  done
+}
+
+# 47 index: the native IVF index and the indexed search. The driver
+# (service/tests/test_index.py) builds an index over a corpus, searches it
+# and checks THE "INDEX ACTUALLY USED" PROPERTY: the rows the index
+# scanned must be far below the corpus's row count (a search that silently
+# ran flat must fail). It also checks that every returned distance is
+# EXACT -- bit-identical to the reference cosine over the FP16 payload the
+# index carries -- that the candidates are ranked by (distance, row id),
+# that with every cell probed the index finds the true best rows, and that
+# the exact fallback returns the exact double-precision cosines.
+#
+# The core must carry the IVF maths: when the vendored archive predates
+# it, every index operation reports "this build of fractalsql-core does
+# not carry the IVF index (rebuild the core and refresh
+# include/<platform>)" -- the documented behaviour, reported as a SKIP.
+gate_47_index() {
+  have python3 || { skip "47 index (no python3 on PATH)"; return; }
+  daemon_conf "$D/index.conf"
+  if daemon_start c "$D/index.conf"; then
+    check "the IVF index is built, searched and verified, and the index (not a flat scan) did the work"       python3 service/tests/test_index.py "$D/d.sock" "$D/hmac.key"
+  else fail "the daemon did not start (index)"; fi
+  daemon_stop
+}
+
+gate_48_domain_agents() {
+  # The nine domain agents the other hosts' gates cover, against the live cluster. They are the JVM
+  # daemon's -- the C daemon has no agent layer -- so the coverage runs the way a Druid deployment
+  # reaches them: over the MCP, against a cluster with the fixtures seeded. Each agent must answer
+  # with the key it documents, so a silently empty answer fails the gate instead of passing it.
+  need_stack || { skip "no stack"; return; }
+  [ -x mcp/fractalsql-druid-mcp ] || { fail "build the MCP server first (gate 12)"; return; }
+  check "the nine domain agents answer with their documented shape" python3 mcp/tests/druid_domain_agents.py mcp/fractalsql-druid-mcp
+}
+
+gate_49_id_emission() {
+  # The row id an agent surfaces is the caller's own column -- Druid has no rowid, and a scan
+  # position is not an id. The fixtures seed ids that are deliberately NOT scan positions, and a
+  # string id with a quote and a backslash in it, which has to come back exactly and leave the
+  # answer valid JSON.
+  need_stack || { skip "no stack"; return; }
+  [ -x mcp/fractalsql-druid-mcp ] || { fail "build the MCP server first (gate 12)"; return; }
+  check "the agents surface the row's own id, not a scan position" python3 mcp/tests/druid_id_emission.py mcp/fractalsql-druid-mcp
+}
+
 gate_43_analyze_java() {
   # SpotBugs with the find-sec-bugs rules over the extension, against the accepted findings (tests/analysis/baseline-java.txt).
   # On demand (--gate 43), not in the default set: the plugins are downloaded on first use, so it needs network or a warm
   # ~/.m2. A finding not in the baseline fails. It reads bytecode, so it does not see SQL built by concatenation and sent to
-  # Druid over HTTP (SECURITY_AUDIT.md 3.5): that is covered by AgentFilterAndCoreTest.
+  # Druid over HTTP: that is covered by AgentFilterAndCoreTest.
   have mvn || { skip "mvn is not installed"; return; }
   local plat; plat="$(host_platform)"
   check "spotbugs + find-sec-bugs run over the extension" \
@@ -721,7 +840,7 @@ gate_43_analyze_java() {
 }
 
 gate_42_mcp_audit() {
-  # SECURITY_AUDIT.md findings in the MCP server: the vector format's dimension limit (unit probe on src/db.h), the numeric
+  # Security regressions in the MCP server: the vector format's dimension limit (unit probe on src/db.h), the numeric
   # bound and the endless Druid answer (stdio, against the stand-in), . The HTTP transport's own findings (origin check,
   # repeated headers, context cap, cancel bookkeeping, /readyz caching) are in mcp_http_edges.py's audit_regressions, run by the
   # MCP-over-HTTP gate. About 15 s.
@@ -1071,7 +1190,7 @@ gate_44_jni_tsan() {
 }
 
 gate_41_frame_auth() {
-  # SECURITY_AUDIT.md 3.1 and 3.22. Authenticating a frame allocates nothing: with the allocation of one chosen size failed
+  # Authenticating a frame allocates nothing: with the allocation of one chosen size failed
   # deterministically (the size the daemon once allocated for it), a forged all-zero-tag frame is still refused.
   # And a key shorter than 16 bytes is not accepted at start-up. The C daemon only (an LD_PRELOAD shim; the JVM daemon's
   # key check is in its self-test).
@@ -1152,6 +1271,8 @@ gate_24_demo() {
   check "demo runner: the SQL function kit" bash -c "cd demo && $NICE timeout 300 python3 run_demo.py --file demo.sql --quiet"
   check "demo runner: the vector kit, including an embedding call" bash -c "cd demo && $NICE timeout 300 python3 run_demo.py --file demo-fractal-vector.sql --quiet"
   if [ "${FSQL_DEMO_FULL:-0}" = 1 ]; then
+    # the index kit builds an IVF index through MSQ writes (a few minutes): it proves build, search, candidates, refresh, ids and rebuild live
+    check "demo runner: the index kit (build, indexed search, refresh, ids, rebuild, drop)" bash -c "cd demo && $NICE timeout 900 python3 run_demo.py --file demo-fractal-index.sql --quiet"
     check "demo runner: the API reference kit" bash -c "cd demo && $NICE timeout 1800 python3 run_demo.py --file benchmark-api-reference.sql --quiet"
   fi
 }
@@ -1206,6 +1327,10 @@ gate_26_multihost() {
   multihost_up
   check "two brokers, each through its own daemon; the router spreads over both; one daemon down affects only its broker" \
     python3 tests/druid_multihost.py "$DRUID_URL" "$DRUID_FRACTALSQL_URL" http://127.0.0.1:8084 fractalsql-druid-fractalsqld-b
+  check "the index registry is rebuilt from the datasources: a restart keeps it, the second broker sees it, a drop reaches both" \
+    python3 tests/druid_index_registry.py "$DRUID_URL" "$DRUID_FRACTALSQL_URL" http://127.0.0.1:8084 fractalsql-druid-broker
+  check "every vector_format (INT8, INT4, FP16, FP32) builds, meets its recall floor, returns exact distances and goes through the index; a 768-dimension INT8 index builds, a rebuild keeps the format, and a dropped name can be created again" \
+    python3 tests/druid_index_formats.py "$DRUID_URL" "$DRUID_FRACTALSQL_URL" fractalsql-druid-broker
   # a run that selects gate 27 as well leaves the pair up for it
   case ",$ONLY," in *",27,"*) ;; *) multihost_down;; esac
 }
@@ -1247,7 +1372,7 @@ GATES=(
   "09 daemon_security   wrong key, uid allow-list, connection and idle limits            ~15s"
   "10 enterprise        signature check, ledger, tamper refusal, dormant path            ~30s"
   "11 extension         unit tests, package, jar contents                                ~90s"
-  "12 mcp_build         MCP server builds, 78 tools, no embedded engine                  ~40s"
+  "12 mcp_build         MCP server builds, 108 tools, no embedded engine                 ~40s"
   "13 mcp_locks         schema lock, safety lock and manifest agree with the table       ~5s"
   "14 mcp_contract      alignment checker                                                ~5s"
   "15 mcp_protocol      MCP initialize/tools/annotations/schema errors, no cluster       ~10s"
@@ -1280,6 +1405,11 @@ GATES=(
   "43 analyze_java     SpotBugs + find-sec-bugs over the extension against the accepted findings (on demand: --gate 43)   ~60s"
   "42 mcp_audit        vector dimension limit, numeric bounds, an endless Druid answer   ~15s"
   "41 frame_auth       a forged frame is refused when its tag cannot be computed; keys under 16 bytes are refused   ~10s"
+  "45 precision       every SQL-visible distance is bit-identical to the sequential double reference   ~20s"
+  "46 rename          fractal_sfs_converge is the convergence function; the old fractal_search is refused by name   ~20s"
+  "47 index           the IVF index is built, searched and verified, and the index (not a flat scan) did the work   ~30s"
+  "48 domain_agents  the nine domain agents answer with their documented shape (the JVM daemon serves them)  ~2m"
+  "49 id_emission    the agents surface the row's own id, not a scan position                            ~1m"
 )
 
 # ---------------------------------------------------------------------------------------------

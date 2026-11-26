@@ -571,10 +571,83 @@ public final class FractalFn {
         // The tunable form of the same search: the SFS over the query
         // alone, with the iteration count, the population size and the
         // diffusion factor named by the caller.
-        add(50, "FRACTAL_SEARCH_DEBUG",
+        // The table-free CONVERGENCE function. It was renamed from
+        // FRACTAL_SEARCH on 2026-11-18 (it runs SFS toward the query
+        // direction; it is not a retrieval function) and there is NO
+        // alias: the old name is refused.
+        add(50, "FRACTAL_SFS_CONVERGE_DEBUG",
                 RetType.STRING,
                 new ArgType[]{ArgType.STRING, ArgType.NUMBER, ArgType.NUMBER, ArgType.NUMBER},
                 new int[]{SLOT_A, SLOT_P1, SLOT_P2, SLOT_P3},
+                false,
+                true);
+
+        // -- the index tier ----------------------------------------------
+        // The native IVF index. The maths lives in the daemon; the
+        // datasource I/O lives in the extension (Druid has no DDL and no
+        // DML, so the index's cells live in a companion datasource,
+        // written with an MSQ INSERT).
+        //
+        // THE OPTIONS ARGUMENT IS REQUIRED here (pass '' for the
+        // defaults): a Calcite operator has a fixed arity, so the
+        // optional trailing options of the other hosts cannot be
+        // omitted on Druid.
+        add(70, "FRACTAL_INDEX_CREATE",
+                RetType.STRING,
+                new ArgType[]{ArgType.STRING, ArgType.STRING, ArgType.STRING},
+                new int[]{SLOT_A, SLOT_B, SLOT_C},
+                false,
+                true);
+        add(71, "FRACTAL_INDEX_REBUILD",
+                RetType.STRING,
+                new ArgType[]{ArgType.STRING, ArgType.STRING},
+                new int[]{SLOT_A, SLOT_B},
+                false,
+                true);
+        add(72, "FRACTAL_INDEX_DROP",
+                RetType.STRING,
+                new ArgType[]{ArgType.STRING},
+                new int[]{SLOT_A},
+                false,
+                true);
+        add(73, "FRACTAL_INDEX_INFO",
+                RetType.STRING,
+                new ArgType[]{ArgType.STRING},
+                new int[]{SLOT_A},
+                false,
+                true);
+        add(74, "FRACTAL_INDEX_CANDIDATES",
+                RetType.STRING,
+                new ArgType[]{ArgType.STRING, ArgType.STRING, ArgType.STRING, ArgType.STRING},
+                new int[]{SLOT_A, SLOT_B, SLOT_C, SLOT_P1},
+                false,
+                true);
+        // The named feature store: a datasource of per-doc_id vectors (the newest row of a doc_id wins).
+        add(78, "FRACTAL_STORE_MORPHOLOGY",
+                RetType.STRING,
+                new ArgType[]{ArgType.NUMBER, ArgType.STRING},
+                new int[]{SLOT_P1, SLOT_A},
+                false,
+                true);
+        add(79, "FRACTAL_MINE_TOPOLOGY_NEGATIVES",
+                RetType.STRING,
+                new ArgType[]{ArgType.STRING, ArgType.NUMBER},
+                new int[]{SLOT_A, SLOT_P1},
+                false,
+                true);
+        // The INDEXED search: fractal_search(table, column, query, k,
+        // options). It reads the index's cells, and every distance it
+        // returns is verified against the index's own FP16 payload.
+        //
+        // The name is the fleet's: the table-free convergence function
+        // was renamed fractal_sfs_converge, and the per-row distance
+        // aggregate that used to carry this name is now
+        // FRACTAL_SEARCH_DISTANCE (a Calcite operator cannot carry two
+        // operators with one name).
+        add(75, "FRACTAL_SEARCH",
+                RetType.STRING,
+                new ArgType[]{ArgType.STRING, ArgType.STRING, ArgType.STRING, ArgType.NUMBER, ArgType.STRING},
+                new int[]{SLOT_A, SLOT_B, SLOT_C, SLOT_P1, SLOT_P2},
                 false,
                 true);
 
@@ -636,6 +709,20 @@ public final class FractalFn {
                 new int[]{SLOT_A, SLOT_P1, SLOT_P2},
                 false,
                 true);
+        // The table-free CONVERGENCE function: SFS toward the query direction, answering {dim, population_size, best_point, best_fit}.
+        // FRACTAL_SFS_CONVERGE_DEBUG is the same search with the full trajectory trace.
+        // Value-weighted k-subset allocation: maximise sum(weight x item_value) with at most k items weighted, each weight at most its upper bound,
+        // the weights summing to 1. prev_weights and turnover_penalty steer the search away from reallocating. At most 255 items.
+        add(77, "FRACTAL_OPTIMIZE_SUBSET",
+                RetType.STRING,
+                new ArgType[]{ArgType.ARRAY, ArgType.ARRAY, ArgType.NUMBER, ArgType.ARRAY, ArgType.NUMBER, ArgType.NUMBER},
+                new int[]{SLOT_A, SLOT_B, SLOT_P1, SLOT_C, SLOT_P2, SLOT_P3});
+        add(76, "FRACTAL_SFS_CONVERGE",
+                RetType.STRING,
+                new ArgType[]{ArgType.STRING, ArgType.NUMBER, ArgType.NUMBER, ArgType.NUMBER},
+                new int[]{SLOT_A, SLOT_P1, SLOT_P2, SLOT_P3},
+                false,
+                true);
     }
 
     /** The registry, in declaration order. */
@@ -681,7 +768,8 @@ public final class FractalFn {
     {
         return new int[]{
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-                20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34
+                20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+                77
         };
     }
 

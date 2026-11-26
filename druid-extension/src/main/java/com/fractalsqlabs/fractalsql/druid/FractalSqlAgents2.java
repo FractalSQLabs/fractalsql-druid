@@ -103,6 +103,7 @@ final class FractalSqlAgents2 {
     static Map<String, Object> scheduleWorkload(
             FractalSqlService service,
             ReasoningBridge reasoning,
+            FractalSqlIndex index,
             Map<String, Object> args) throws Exception
     {
         final double[] task = vector(service, args, "task_vec");
@@ -114,9 +115,18 @@ final class FractalSqlAgents2 {
         final int k = integer(args, "k", 5);
 
         final double[] refined = refine(task, iterations, population);
-        final Map<String, Object> hits = service.searchTelemetry(
-                table, column, idColumn, text(refined), k);
-        final List<Map<String, Object>> rows = rowsOf(hits);
+        // agent_use_index: the refined profile is matched through the index when one covers the column (the scan otherwise)
+        final Object[] viaIndex = FractalSqlAgents.nearestViaIndex(service, index, table, column, idColumn, refined);
+        final List<Map<String, Object>> rows;
+        if (viaIndex != null) {
+            final Map<String, Object> hit = new LinkedHashMap<>();
+            hit.put("doc_id", viaIndex[0]);
+            hit.put("distance", viaIndex[1]);
+            rows = new ArrayList<>();
+            rows.add(hit);
+        } else {
+            rows = rowsOf(service.searchTelemetry(table, column, idColumn, text(refined), k));
+        }
 
         final Map<String, Object> doc = new LinkedHashMap<>();
         doc.put("assigned_node", rows.isEmpty() ? null : rows.get(0).get("doc_id"));

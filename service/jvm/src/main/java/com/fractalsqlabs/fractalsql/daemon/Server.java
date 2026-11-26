@@ -54,7 +54,7 @@ final class Server {
         }
         listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
         // Bound under a private (0700) directory next to the final path, narrowed, and only then renamed into place: the
-        // socket is never reachable by another user while it still has its default mode (SECURITY_AUDIT.md 3.26). A path too
+        // socket is never reachable by another user while it still has its default mode. A path too
         // long for a second sun_path (108 bytes) falls back to binding in place.
         final Path parent = sock.toAbsolutePath().getParent();
         Path stage = null;

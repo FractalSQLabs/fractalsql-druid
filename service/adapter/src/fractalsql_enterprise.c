@@ -141,7 +141,7 @@
 #include <openssl/crypto.h>      /* CRYPTO_memcmp: constant-time ledger MAC comparison */
 
 /* The covariance matrix is n*n doubles: the asset count is bounded (8192 is 512 MiB of matrix) so that n*n and n*n*8 cannot wrap a
- * size_t, whatever the input's length limits happen to be (SECURITY_AUDIT.md 3.15). */
+ * size_t, whatever the input's length limits happen to be. */
 #define FSQ_MAX_ASSETS ((size_t) 8192)
 static inline int fsq_cov_cells_ok(size_t n_assets, size_t cov_n) { return n_assets <= FSQ_MAX_ASSETS && cov_n == n_assets * n_assets; }
 
@@ -268,6 +268,8 @@ ent_env_capture_locked(void)
 }
 
 static ent_ledger_void_fn   g_ent_ledger_flush;
+typedef int (*ent_set_mode_fn)(fsql_ctx *ctx, int mode);
+static ent_set_mode_fn      g_ent_ledger_set_retention;   /* optional: absent in cores older than 2.0.28 */
 static ent_ledger_void_fn   g_ent_ledger_load;
 static ent_ledger_void_fn   g_ent_ledger_compact;
 static ent_ledger_void_fn   g_ent_ledger_reset_soft;
@@ -455,7 +457,8 @@ ent_verify_signature(const char *so_path,
         /* Confirm the file is EXACTLY 64 bytes, not >=64 -- a longer
          * file silently truncated to 64 by fread would otherwise verify
          * against the wrong (partial) signature. */
-        int c = fgetc(f);
+        /* After a read error the stream position is indeterminate: do not touch it again. */
+        int c = ferror(f) ? 0 : fgetc(f);
         fclose(f);
         if (n != sizeof sig_bytes || c != EOF)
             return ENT_SIG_INVALID;   /* wrong-sized .sig -- corrupt/tampered, not "absent" */
@@ -469,7 +472,7 @@ ent_verify_signature(const char *so_path,
         return ENT_SIG_IOERROR;
     }
     so_len = ftell(f);
-    if (so_len < 0 || fseek(f, 0, SEEK_SET) != 0)
+    if (so_len < 0 || so_len > 256L * 1024 * 1024 || fseek(f, 0, SEEK_SET) != 0)
     {
         fclose(f);
         return ENT_SIG_IOERROR;
@@ -690,6 +693,8 @@ ent_resolve_symbols(void *h)
         ent_dlsym(h, "fsql_optimize_portfolio_multimodal_ex");
     g_ent_portfolio_multimodal_pareto = (ent_portfolio_multimodal_pareto_fn)
         ent_dlsym(h, "fsql_optimize_portfolio_multimodal_pareto");
+
+    g_ent_ledger_set_retention = (ent_set_mode_fn) ent_dlsym(h, "fsql_ledger_set_retention");
 
     return g_ent_ledger_flush && g_ent_ledger_load && g_ent_ledger_compact &&
            g_ent_ledger_reset_soft && g_ent_ledger_reset_hard &&
@@ -1282,7 +1287,18 @@ ledger_head_write(const ledger_head_rec_t *recs, int n)
     int  tn = snprintf(tmp, sizeof tmp, "%s.tmp", p);
     if (tn < 0 || (size_t) tn >= sizeof tmp) return false;
 
+#if defined(_WIN32) || defined(__CYGWIN__)
     FILE *fp = ledger_open_private(tmp, O_WRONLY | O_TRUNC | O_CREAT, "wb", 1);
+#else
+    /* The temporary name is predictable, so it must not be followed through a planted symlink or
+     * reused: remove whatever is there (unlink does not follow a link), then create it exclusively. */
+    (void) unlink(tmp);
+    FILE *fp = ledger_open_private(tmp, O_WRONLY | O_CREAT | O_EXCL
+#ifdef O_NOFOLLOW
+                                        | O_NOFOLLOW
+#endif
+                                   , "wb", 1);
+#endif
     if (fp == NULL) return false;
 
     bool ok = true;
@@ -2340,6 +2356,35 @@ const fsql_storage_vfs_t *
 fractal_ledger_storage_vfs(void)
 {
     return &g_ledger_vfs;
+}
+
+/* ledger_retention: FRACTALSQL_LEDGER_RETENTION = "fade" (the core's default, no call needed) or "exact" (the Shadow
+ * weights never decay). Applied to a session's context once, when the enterprise library is loaded. Returns true when
+ * the library is loaded and the context now carries the configured mode (or needs none); false when there is
+ * nothing to apply yet, so the caller tries again on the next acquire. An "exact" request against a library that
+ * does not export fsql_ledger_set_retention is refused loudly (stderr), never silently run as "fade". */
+bool
+fractal_enterprise_apply_retention(fsql_ctx *ctx)
+{
+    const char *e = getenv("FRACTALSQL_LEDGER_RETENTION");
+    bool exact = e != NULL && strcmp(e, "exact") == 0;
+    bool loaded, done = false;
+
+    if (ctx == NULL) return false;
+    if (e != NULL && *e != '\0' && !exact && strcmp(e, "fade") != 0) {
+        fprintf(stderr, "fractalsql: FRACTALSQL_LEDGER_RETENTION=\"%s\" is not recognised (fade or exact); using fade\n", e);
+    }
+    ent_lock();
+    loaded = g_ent_loaded;
+    if (loaded) {
+        if (!exact) done = true;
+        else if (g_ent_ledger_set_retention == NULL)
+            fprintf(stderr, "fractalsql: FRACTALSQL_LEDGER_RETENTION=exact needs an enterprise library that exports "
+                            "fsql_ledger_set_retention (upgrade the enterprise library); the ledger stays at fade\n");
+        else done = g_ent_ledger_set_retention(ctx, 1) == FSQL_OK;
+    }
+    ent_unlock();
+    return done;
 }
 
 bool

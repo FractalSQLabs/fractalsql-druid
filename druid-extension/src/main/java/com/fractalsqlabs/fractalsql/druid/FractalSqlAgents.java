@@ -39,6 +39,8 @@ public class FractalSqlAgents {
     private final ReasoningBridge reasoning;
     private final FractalSqlEnterprise enterprise;
 
+    private FractalSqlIndex index;
+
     @Inject
     public FractalSqlAgents(FractalSqlService service, ReasoningBridge reasoning,
             FractalSqlEnterprise enterprise)
@@ -46,6 +48,121 @@ public class FractalSqlAgents {
         this.service = service;
         this.reasoning = reasoning;
         this.enterprise = enterprise;
+    }
+
+    /** The index tier the nearest-row agents search through when agent_use_index is on (optional: without it they scan exactly). */
+    @Inject(optional = true)
+    public void setIndex(FractalSqlIndex index)
+    {
+        this.index = index;
+    }
+
+    /**
+     * agent_use_index: the nearest row of table.column to {@code query}, searched through the fractal_index that covers it. Off by
+     * default (an index can, rarely, pick a different nearest row than the exact scan; every distance is still exact). Returns
+     * {id, distance} (the id is null when {@code idColumn} is null), or null when the setting is off, no index covers the column, the
+     * index's id column is not {@code idColumn}, or the index cannot answer: the caller then scans exactly.
+     */
+    Object[] indexNearest(String table, String column, String idColumn, double[] query)
+    {
+        return nearestViaIndex(service, index, table, column, idColumn, query);
+    }
+
+    static Object[] nearestViaIndex(FractalSqlService service, FractalSqlIndex index, String table, String column,
+            String idColumn, double[] query)
+    {
+        final List<Object[]> top = topViaIndex(service, index, table, column, idColumn, query, 1);
+        return top == null ? null : top.get(0);
+    }
+
+    /**
+     * The {@code k} nearest rows of table.column to {@code query} through the index that covers it, under the same rules as
+     * {@link #nearestViaIndex}: each entry is {id, distance} nearest first, every distance exact. Null when the setting is off, no
+     * index covers the column, or the index cannot answer; the caller then scans exactly.
+     */
+    static List<Object[]> topViaIndex(FractalSqlService service, FractalSqlIndex index, String table, String column,
+            String idColumn, double[] query, int k)
+    {
+        return topViaIndex(service, index, table, column, idColumn, query, k, null);
+    }
+
+    /** As above, restricted to the rows whose ids are in {@code ids} (the cohort); null means every row. */
+    static List<Object[]> topViaIndex(FractalSqlService service, FractalSqlIndex index, String table, String column,
+            String idColumn, double[] query, int k, java.util.Collection<?> ids)
+    {
+        if (index == null || !service.agentUseIndex()) {
+            return null;
+        }
+        final String indexId = index.idColumnFor(table, column);
+        if (indexId == null || (idColumn != null && !idColumn.equals(indexId))) {
+            return null;
+        }
+        if (service.agentUseIndexMode() == 2 && !index.readyForAuto(table, column, service.agentIndexMinRows())) {
+            return null;
+        }
+        final StringBuilder q = new StringBuilder("[");
+        for (int i = 0; i < query.length; i++) {
+            q.append(i == 0 ? "" : ",").append(query[i]);
+        }
+        q.append(']');
+        try {
+            final Map<String, Object> result = index.search(table, column, q.toString(), Math.max(1, k), ids == null ? "{}" : idsOption(ids));
+            final List<?> hits = (List<?>) result.get("candidates");
+            if (hits == null || hits.isEmpty()) {
+                return null;
+            }
+            final List<Object[]> out = new ArrayList<>();
+            for (Object o : hits) {
+                if (!(o instanceof Map)) {
+                    continue;
+                }
+                final Map<?, ?> hit = (Map<?, ?>) o;
+                final Object id = hit.get("doc_id");
+                final Object distance = hit.get("distance");
+                if (!(distance instanceof Number)) {
+                    continue;
+                }
+                final Object normalised = id instanceof Number && ((Number) id).doubleValue() == Math.rint(((Number) id).doubleValue())
+                        ? (Object) Long.valueOf(((Number) id).longValue()) : id;
+                out.add(new Object[]{normalised, ((Number) distance).doubleValue()});
+                if (out.size() >= k) {
+                    break;
+                }
+            }
+            return out.isEmpty() ? null : out;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String idsOption(java.util.Collection<?> ids)
+    {
+        final StringBuilder sb = new StringBuilder("{\"ids\":[");
+        boolean first = true;
+        for (Object id : ids) {
+            if (!(id instanceof Number)) {
+                continue;
+            }
+            sb.append(first ? "" : ",").append(((Number) id).longValue());
+            first = false;
+        }
+        return sb.append("]}").toString();
+    }
+
+    /** The retrieval document of an index answer: {"top_k":[{"doc_id":..,"dist":..}],"used_index":true}. */
+    private String indexRetrieval(List<Object[]> top) throws Exception
+    {
+        final List<Map<String, Object>> rows = new ArrayList<>();
+        for (Object[] t : top) {
+            final Map<String, Object> m = new LinkedHashMap<>();
+            m.put("doc_id", t[0]);
+            m.put("dist", t[1]);
+            rows.add(m);
+        }
+        final Map<String, Object> doc = new LinkedHashMap<>();
+        doc.put("top_k", rows);
+        doc.put("used_index", true);
+        return service.mapper().writeValueAsString(doc);
     }
 
     /**
@@ -65,6 +182,18 @@ public class FractalSqlAgents {
         } else if (args.get("id_column") != null && args.get("id_col") == null) {
             args = new java.util.LinkedHashMap<>(args);
             args.put("id_col", args.get("id_column"));
+        }
+        // The MCP and the SQL-style callers name the retrieval agents' arguments table_name, vector_col and pop_size; the endpoint says
+        // table, col and population_size. Either spelling works, and an empty meta_filter ("" or "{}") means no filter.
+        if (name.equals("search_agent") || name.equals("rag_agent")) {
+            args = new java.util.LinkedHashMap<>(args);
+            alias(args, "table_name", "table");
+            alias(args, "vector_col", "col");
+            alias(args, "pop_size", "population_size");
+            final Object mf = args.get("meta_filter");
+            if (mf != null && (mf.toString().trim().isEmpty() || mf.toString().trim().equals("{}"))) {
+                args.remove("meta_filter");
+            }
         }
         switch (name) {
             case "anomaly_triage":
@@ -98,7 +227,7 @@ public class FractalSqlAgents {
             case "track_anomaly":
                 return FractalSqlAgents2.trackAnomaly(service, reasoning, args);
             case "schedule_workload":
-                return FractalSqlAgents2.scheduleWorkload(service, reasoning, args);
+                return FractalSqlAgents2.scheduleWorkload(service, reasoning, index, args);
             case "network_coverage_alert":
                 return FractalSqlAgents2.networkCoverageAlert(service, reasoning, args);
             case "patient_deterioration_triage":
@@ -230,22 +359,28 @@ public class FractalSqlAgents {
         final int budget = integer(args, "budget", 0);
         final int cost = integer(args, "cost_per_route", 150);
 
-        final List<Object[]> rows = service.corpusRows(table, embColumn, idColumn, null);
-        if (rows.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "fractalsql: fractal_agent_route_task: no capability rows in " + table);
-        }
         Object nearest = null;
         double best = Double.POSITIVE_INFINITY;
-        for (Object[] row : rows) {
-            final double[] v = (double[]) row[0];
-            if (v.length != task.length) {
-                continue;
+        final Object[] viaIndex = indexNearest(table, embColumn, idColumn, task);
+        if (viaIndex != null) {
+            nearest = viaIndex[0];
+            best = (Double) viaIndex[1];
+        } else {
+            final List<Object[]> rows = service.corpusRows(table, embColumn, idColumn, null);
+            if (rows.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "fractalsql: fractal_agent_route_task: no capability rows in " + table);
             }
-            final double d = Native.cosineDistance(v, task);
-            if (d < best) {
-                best = d;
-                nearest = row[1];
+            for (Object[] row : rows) {
+                final double[] v = (double[]) row[0];
+                if (v.length != task.length) {
+                    continue;
+                }
+                final double d = Native.cosineDistance(v, task);
+                if (d < best) {
+                    best = d;
+                    nearest = row[1];
+                }
             }
         }
         final String routedTo = nearest == null ? null : nearest.toString();
@@ -344,18 +479,23 @@ public class FractalSqlAgents {
                     "fractalsql: fractal_agent_outlier_intercept: metric must be 'cosine' or 'l2'");
         }
 
-        final List<Object[]> rows = service.corpusRows(table, embColumn, null, null);
         double nearest = Double.POSITIVE_INFINITY;
-        for (Object[] row : rows) {
-            final double[] v = (double[]) row[0];
-            if (v.length != state.length) {
-                continue;
-            }
-            final double d = "l2".equals(metric)
-                    ? Native.callFn(20, v, v.length, state, state.length, null, 0, 0, 0, 0, null)
-                    : Native.callFn(22, v, v.length, state, state.length, null, 0, 0, 0, 0, null);
-            if (d < nearest) {
-                nearest = d;
+        final Object[] viaIndex = "l2".equals(metric) ? null : indexNearest(table, embColumn, null, state);
+        if (viaIndex != null) {
+            nearest = (Double) viaIndex[1];
+        } else {
+            final List<Object[]> rows = service.corpusRows(table, embColumn, null, null);
+            for (Object[] row : rows) {
+                final double[] v = (double[]) row[0];
+                if (v.length != state.length) {
+                    continue;
+                }
+                final double d = "l2".equals(metric)
+                        ? Native.callFn(20, v, v.length, state, state.length, null, 0, 0, 0, 0, null)
+                        : Native.callFn(22, v, v.length, state, state.length, null, 0, 0, 0, 0, null);
+                if (d < nearest) {
+                    nearest = d;
+                }
             }
         }
         if (Double.isInfinite(nearest)) {
@@ -394,15 +534,34 @@ public class FractalSqlAgents {
                 ? null
                 : equalsFilter(filterColumn, filterValue);
         final List<Object[]> rows = service.corpusRows(table, vecColumn, idColumn, filter);
-        final List<Object[]> scored = new ArrayList<>();
-        for (Object[] row : rows) {
-            final double[] v = (double[]) row[0];
-            if (v.length != query.length) {
-                continue;
+        List<Object[]> scored = new ArrayList<>();
+        // agent_use_index: the cohort becomes the index's ids set; every distance is still exact. Null (off, no covering index, or an index
+        // that cannot answer) falls back to the exact cohort scan below.
+        boolean usedIndex = false;
+        if (!rows.isEmpty()) {
+            final List<Object> cohort = new ArrayList<>();
+            for (Object[] row : rows) {
+                cohort.add(row[1]);
             }
-            scored.add(new Object[]{Native.cosineDistance(v, query), row[1]});
+            final List<Object[]> viaIndex = topViaIndex(service, index, table, vecColumn, idColumn, query, k, cohort);
+            if (viaIndex != null) {
+                scored = new ArrayList<>();
+                for (Object[] h : viaIndex) {
+                    scored.add(new Object[]{h[1], h[0]});
+                }
+                usedIndex = true;
+            }
         }
-        scored.sort((a, b) -> Double.compare((Double) a[0], (Double) b[0]));
+        if (!usedIndex) {
+            for (Object[] row : rows) {
+                final double[] v = (double[]) row[0];
+                if (v.length != query.length) {
+                    continue;
+                }
+                scored.add(new Object[]{Native.cosineDistance(v, query), row[1]});
+            }
+            scored.sort((a, b) -> Double.compare((Double) a[0], (Double) b[0]));
+        }
         final List<Map<String, Object>> hits = new ArrayList<>();
         for (int i = 0; i < Math.min(k, scored.size()); i++) {
             final Map<String, Object> hit = new LinkedHashMap<>();
@@ -414,6 +573,7 @@ public class FractalSqlAgents {
         doc.put("memories", hits);
         doc.put("rows", hits);
         doc.put("n_corpus", rows.size());
+        doc.put("used_index", usedIndex);
         return doc;
     }
 
@@ -735,6 +895,26 @@ public class FractalSqlAgents {
                     "fractalsql: fractal_agent_plan_explore: no rows in " + table);
         }
         final double[] query = vector(state);
+        // agent_use_index: the nearest rows through an index built over the rows' positions (no id column), so the ids it returns are the
+        // positions the full scan reports. Every distance is exact. Null (off, no such index, or it cannot answer) scans every row below.
+        final List<Object[]> viaIndex = topViaIndex(service, index, table, column, "", query, Math.max(branches, 1));
+        if (viaIndex != null) {
+            final List<Map<String, Object>> top = new ArrayList<>();
+            for (Object[] h : viaIndex) {
+                final Map<String, Object> m = new LinkedHashMap<>();
+                m.put("idx", h[0]);
+                m.put("dist", h[1]);
+                top.add(m);
+            }
+            final Map<String, Object> found = new LinkedHashMap<>();
+            found.put("top_k", top);
+            final Map<String, Object> doc = new LinkedHashMap<>();
+            doc.put("state", state);
+            doc.put("branches", branches);
+            doc.put("result", service.mapper().writeValueAsString(found));
+            doc.put("used_index", true);
+            return doc;
+        }
         final int dim = ((double[]) rows.get(0)[0]).length;
         final double[] corpus = new double[rows.size() * dim];
         for (int i = 0; i < rows.size(); i++) {
@@ -750,6 +930,7 @@ public class FractalSqlAgents {
         doc.put("state", state);
         doc.put("branches", branches);
         doc.put("result", result);
+        doc.put("used_index", false);
         return doc;
     }
 
@@ -832,12 +1013,37 @@ public class FractalSqlAgents {
         final int population = integer(args, "population_size", 10);
         final int iterations = integer(args, "iterations", 5);
 
-        final List<Object[]> rows = service.corpusRows(table, column, null, null);
+        final String metaFilter = args.get("meta_filter") == null
+                ? null
+                : structuredFilter(args.get("meta_filter").toString());
+        final String idCol = args.get("id_col") == null ? null : args.get("id_col").toString();
+
+        // agent_use_index: with no filter, the nearest rows come through the index that covers the column (the rows are not read)
+        double[] early = null;
+        if (metaFilter == null) {
+            early = service.embedVector(question);
+            if (early == null) {
+                throw new IllegalStateException(
+                        "fractalsql: no embedding provider is configured, or the call failed");
+            }
+            final List<Object[]> top = topViaIndex(service, index, table, column, idCol, early, Math.max(population, 1));
+            if (top != null) {
+                final Map<String, Object> doc = new LinkedHashMap<>();
+                doc.put("question", question);
+                doc.put("result", indexRetrieval(top));
+                doc.put("n_corpus", null);
+                doc.put("used_index", true);
+                sourcesFromIndex(doc, top);
+                return doc;
+            }
+        }
+
+        final List<Object[]> rows = service.corpusRows(table, column, idCol, metaFilter);
         if (rows.isEmpty()) {
             throw new IllegalArgumentException(
                     "fractalsql: fractal_search_agent: no rows in " + table);
         }
-        final double[] embedded = service.embedVector(question);
+        final double[] embedded = early != null ? early : service.embedVector(question);
         if (embedded == null) {
             throw new IllegalStateException(
                     "fractalsql: no embedding provider is configured, or the call failed");
@@ -857,10 +1063,12 @@ public class FractalSqlAgents {
         doc.put("question", question);
         doc.put("result", result);
         doc.put("n_corpus", rows.size());
+        doc.put("used_index", false);
+        sourcesFromScan(doc, result, rows);
         return doc;
     }
 
-    /** A SQL identifier in double quotes, with any embedded double quote doubled (SECURITY_AUDIT.md 3.5). */
+    /** A SQL identifier in double quotes, with any embedded double quote doubled. */
     static String quoteIdent(String name)
     {
         return "\"" + (name == null ? "" : name.replace("\"", "\"\"")) + "\"";
@@ -878,7 +1086,7 @@ public class FractalSqlAgents {
     /**
      * The metadata filter, which used to be spliced into the statement as a raw predicate. It is accepted only as
      * {@code column = 'literal'}, the column bare or in double quotes (the one form the agents document), and rebuilt from its parts; anything else, such as a
-     * UNION or a comment, is refused (SECURITY_AUDIT.md 3.5).
+     * UNION or a comment, is refused.
      */
     static String structuredFilter(String raw)
     {
@@ -904,12 +1112,35 @@ public class FractalSqlAgents {
                 ? null
                 : structuredFilter(args.get("meta_filter").toString());
 
-        final List<Object[]> rows = service.corpusRows(table, column, null, metaFilter);
+        final String idCol = args.get("id_col") == null ? null : args.get("id_col").toString();
+        double[] early = null;
+        if (metaFilter == null) {
+            early = service.embedVector(question);
+            if (early == null) {
+                throw new IllegalStateException(
+                        "fractalsql: no embedding provider is configured, or the call failed");
+            }
+            final List<Object[]> top = topViaIndex(service, index, table, column, idCol, early, 5);
+            if (top != null) {
+                final String retrieved = indexRetrieval(top);
+                final Map<String, Object> doc = new LinkedHashMap<>();
+                doc.put("question", question);
+                doc.put("retrieval", retrieved);
+                doc.put("answer", reasoning.reason(
+                        "Answer the question from the retrieved documents: " + question,
+                        "{\"retrieval\":" + retrieved + "}"));
+                doc.put("used_index", true);
+                sourcesFromIndex(doc, top);
+                return doc;
+            }
+        }
+
+        final List<Object[]> rows = service.corpusRows(table, column, idCol, metaFilter);
         if (rows.isEmpty()) {
             throw new IllegalArgumentException(
                     "fractalsql: fractal_rag_agent: no rows in " + table);
         }
-        final double[] embedded = service.embedVector(question);
+        final double[] embedded = early != null ? early : service.embedVector(question);
         if (embedded == null) {
             throw new IllegalStateException(
                     "fractalsql: no embedding provider is configured, or the call failed");
@@ -930,10 +1161,57 @@ public class FractalSqlAgents {
         doc.put("answer", reasoning.reason(
                 "Answer the question from the retrieved documents: " + question,
                 "{\"retrieval\":" + result + "}"));
+        doc.put("used_index", false);
+        sourcesFromScan(doc, result, rows);
         return doc;
     }
 
+    /**
+     * source_row_ids for an answer that came through the index: the ids of the rows the index returned, best first (the
+     * id column's values when the index was built with one, otherwise the row positions).
+     */
+    private static void sourcesFromIndex(Map<String, Object> doc, List<Object[]> top)
+    {
+        final List<Object> ids = new ArrayList<>();
+        for (Object[] h : top) {
+            ids.add(h[0]);
+        }
+        doc.put("source_row_ids", ids);
+    }
+
+    /**
+     * source_row_ids for an answer that came from the scan: the rows' ids (the id column's values when id_col was given, otherwise their
+     * positions in the corpus scan).
+     */
+    private void sourcesFromScan(Map<String, Object> doc, String result, List<Object[]> rows)
+    {
+        final List<Object> ids = new ArrayList<>();
+        try {
+            final com.fasterxml.jackson.databind.JsonNode top = service.mapper().readTree(result).get("top_k");
+            if (top != null && top.isArray()) {
+                for (com.fasterxml.jackson.databind.JsonNode n : top) {
+                    final int idx = n.path("idx").asInt(-1);
+                    if (idx < 0 || idx >= rows.size()) {
+                        continue;
+                    }
+                    final Object id = rows.get(idx).length > 1 ? rows.get(idx)[1] : null;
+                    ids.add(id == null ? (Object) idx : id);
+                }
+            }
+        } catch (Exception e) {
+            // no sources reported: the answer is unaffected
+        }
+        doc.put("source_row_ids", ids);
+    }
+
     // -- the shared helpers ---------------------------------------------
+
+    private static void alias(Map<String, Object> args, String from, String to)
+    {
+        if (args.get(to) == null && args.get(from) != null) {
+            args.put(to, args.get(from));
+        }
+    }
 
     /** A required string argument. */
     private static String required(Map<String, Object> args, String name)

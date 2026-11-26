@@ -49,7 +49,7 @@ CSV (`'1.0,0.5,-0.25'`) or bracketed JSON (`'[1.0,0.5,-0.25]'`). A
 **vector result** comes back in the core's JSON text form, the same
 convention of the core.
 
-**One aggregate** — `fractal_search(vector_column, query_text)` scores each
+**One aggregate** — `fractal_search_distance(vector_column, query_text)` scores each
 row's embedding against a query vector, using the core's Stochastic Fractal
 Search optimizer to refine the query into a projection and then taking the
 cosine distance to it. Lower is closer; `0.0` is an exact match. It is an
@@ -57,7 +57,7 @@ aggregate because it has to scan the column as a corpus rather than score a
 single row, so it is expressed as an aggregate over one group per row.
 
 ```sql
-SELECT "id", fractal_search("emb", '[1.0,0.0,0.0]') AS "dist"
+SELECT "id", fractal_search_distance("emb", '[1.0,0.0,0.0]') AS "dist"
 FROM "demo_vecs"
 GROUP BY "id"
 ORDER BY "dist" ASC

@@ -25,11 +25,17 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
- * The SQL surface for {@code fractal_search}.
+ * The SQL surface for {@code fractal_search_distance}.
+ *
+ * <p>It was called {@code fractal_search} until the fleet's indexed search
+ * took that name (2026-11-18): this aggregate scores a STORED column
+ * against a query, while {@code fractal_search} is now the indexed search
+ * over a datasource. A Calcite operator cannot carry two operators with one
+ * name, so the aggregate moved.
  *
  * <p>Signature:
  * <pre>
- *   fractal_search(vector_column, query_text) -&gt; DOUBLE
+ *   fractal_search_distance(vector_column, query_text) -&gt; DOUBLE
  * </pre>
  * where {@code vector_column} is a Druid ARRAY column -- or a VARCHAR
  * column holding the vector in the core's text form -- and
@@ -50,7 +56,7 @@ import java.util.List;
 public class FractalSearchSqlAggregator implements SqlAggregator {
 
     /** The SQL-visible name. */
-    public static final String FUNCTION_NAME = "FRACTAL_SEARCH";
+    public static final String FUNCTION_NAME = "FRACTAL_SEARCH_DISTANCE";
 
     /** The node's configuration: the SFS tuning the core is driven with. */
     private final FractalSqlConfig config;
@@ -122,7 +128,7 @@ public class FractalSearchSqlAggregator implements SqlAggregator {
         if (aggregatorName != null && !aggregatorName.isEmpty()) {
             return aggregatorName;
         }
-        return "fractal_search";
+        return "fractal_search_distance";
     }
 
     /**
@@ -232,7 +238,7 @@ public class FractalSearchSqlAggregator implements SqlAggregator {
         // searches run on that same context.
         final byte[] params = config.searchParamsJson().getBytes(StandardCharsets.UTF_8);
         final String[] errOut = new String[1];
-        // Under the context lock: the context is shared by every query thread on the node (SECURITY_AUDIT.md 3.4).
+        // Under the context lock: the context is shared by every query thread on the node.
         final byte[] result = core.locked(ctx -> {
             final byte[] r = Native.searchPtr(ctx, query, 1, query.length, query, query.length, 1, params);
             if (r == null) {

@@ -89,6 +89,23 @@ public class FractalSqlService {
     }
 
     /** The mapper the resource uses for its bodies. */
+    /** agent_use_index (druid.fractalsql.agent_use_index, off by default): the nearest-row agents search through a fractal_index. */
+    public boolean agentUseIndex()
+    {
+        return config.agentUseIndexMode() != 0;
+    }
+
+    /** 0 off, 1 on, 2 auto (an index only when ready, calibrated and over agent_index_min_rows; otherwise scans exactly). */
+    public int agentUseIndexMode()
+    {
+        return config.agentUseIndexMode();
+    }
+
+    public int agentIndexMinRows()
+    {
+        return config.operatorInt("agent_index_min_rows");
+    }
+
     public ObjectMapper mapper()
     {
         return mapper;

@@ -505,9 +505,9 @@ def context_sessions():
 
 
 def audit_regressions():
-    """Findings of SECURITY_AUDIT.md: the origin check parses an address (3.17), a repeated header the server acts on is refused
-    (3.18), contexts minted without a handle are capped (3.7), a cancel for an id that is not in flight is not remembered or logged
-    (3.8), and /readyz does not run a Druid query per request (3.14)."""
+    """Security regressions: the origin check parses an address, a repeated header the server acts on is refused, contexts minted without
+    a handle are capped, a cancel for an id that is not in flight is not remembered or logged, and /readyz does not run a Druid query
+    per request."""
     policy = os.path.join(scratch, "audit-policy.json")
     with open(policy, "w") as f:
         json.dump({"tokens": [{"name": "a", "sha256": sha("tok-a"), "tools": "*"}]}, f)

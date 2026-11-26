@@ -20,20 +20,37 @@ namespace fsqlmcp
     {
         std::vector<ToolSpec> t;
 
-        t.push_back( ToolSpec{ "fractal_search_debug", "Discovery", ToolClass::Cheap,
+        t.push_back( ToolSpec{ "fractal_sfs_converge", "Discovery", ToolClass::Cheap,
             { Vec("query", true, "Query vector."),
               Int("iterations", false, "SFS iterations.", 30),
               Int("population_size", false, "SFS population size.", 50),
               Int("diffusion_factor", false, "SFS diffusion factor.", 2) },
             std::nullopt, false, true,
             [&db]( const Json& a, CallCtx& ) {
-                return parseJsonStrict( db.callScalar( "SELECT fractal_search_debug(?, ?, ?, ?)",
+                return parseJsonStrict( db.callScalar( "SELECT fractal_sfs_converge(?, ?, ?, ?)",
                     { vectors::vectorParamToText( a.at("query"), "query" ),
                       a.value("iterations", 30), a.value("population_size", 50), a.value("diffusion_factor", 2) } ) );
             } } );
-        t.back().description = "Same Sniper convergence as fractal_search with a full trajectory trace: {dim, "
+        t.back().description = "The table-free CONVERGENCE function: SFS toward the query direction, answering {dim, population_size, "
+            "best_point, best_fit}. best_point is a plain JSON array of numbers. It reads no table and is not a retrieval function: "
+            "the indexed search is fractal_search. fractal_sfs_converge_debug is the same search with the full trajectory trace.";
+
+        t.push_back( ToolSpec{ "fractal_sfs_converge_debug", "Discovery", ToolClass::Cheap,
+            { Vec("query", true, "Query vector."),
+              Int("iterations", false, "SFS iterations.", 30),
+              Int("population_size", false, "SFS population size.", 50),
+              Int("diffusion_factor", false, "SFS diffusion factor.", 2) },
+            std::nullopt, false, true,
+            [&db]( const Json& a, CallCtx& ) {
+                return parseJsonStrict( db.callScalar( "SELECT fractal_sfs_converge_debug(?, ?, ?, ?)",
+                    { vectors::vectorParamToText( a.at("query"), "query" ),
+                      a.value("iterations", 30), a.value("population_size", 50), a.value("diffusion_factor", 2) } ) );
+            } } );
+        t.back().description = "The table-free CONVERGENCE function with a full trajectory trace: {dim, "
             "generations, population_size, best_point, best_fit, best_fit_per_gen, paths}: the tunable form "
-            "(the knobs are tunable here). best_point is a plain JSON array of numbers.";
+            "(the knobs are tunable here). best_point is a plain JSON array of numbers. It was renamed from "
+            "fractal_search_debug: it runs SFS toward the query direction and is not a retrieval function. "
+            "The indexed search is fractal_search.";
 
         t.push_back( ToolSpec{ "fractal_search_explore", "Discovery", ToolClass::Cheap,
             { Str("table_name", true, "Datasource holding the corpus."), Str("vector_col", true, "Embedding column."),

@@ -192,7 +192,7 @@ str_out_ensure(str_out_ctx *so, size_t need)
     if (need <= so->cap) return true;
     ncap = so->cap ? so->cap : 256;
     while (ncap < need) {
-        /* doubling must not wrap (to 0, which never reaches need) (SECURITY_AUDIT.md 3.16) */
+        /* doubling must not wrap (to 0, which never reaches need) */
         if (ncap > SIZE_MAX / 2) { ncap = need; break; }
         ncap *= 2;
     }
@@ -1017,7 +1017,12 @@ embed_env_open(fsql_ctx *ctx, unsigned long long session_id,
 static void
 embed_env_close(char **saved)
 {
+    /* setenv/unsetenv rewrite the process environment vector, so the restore leg takes the same
+     * cross-TU lock every other tier's setenv burst holds (embed_env_open released it before
+     * returning): otherwise a restore can land inside another tier's publish -> plugin-load window. */
+    fractal_config_env_lock();
     embed_env_restore(saved);
+    fractal_config_env_unlock();
 }
 
 /* Load the reasoning plugin into `ctx` if not already loaded (per

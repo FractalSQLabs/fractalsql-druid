@@ -216,7 +216,7 @@ final class DaemonConfig {
             throw new ConfigException("the hmac key file " + path + " is not valid hex");
         }
         if (n / 2 < MIN_KEY_BYTES) {
-            // 128 bits at least: a one-byte key would be guessed in 256 tries (SECURITY_AUDIT.md 3.22).
+            // 128 bits at least: a one-byte key would be guessed in 256 tries.
             throw new ConfigException("the hmac key file " + path + " holds " + n / 2
                     + " bytes; at least " + MIN_KEY_BYTES + " are required");
         }

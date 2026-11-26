@@ -143,7 +143,7 @@ public class FractalSqlEnterprise {
     /**
      * The gate of the operations that destroy ledger records (compact, reset): refused unless the operator has switched them
      * on with {@code ledger.allow_destructive}, and always refused once the one-way latch is set. Every attempt is logged,
-     * allowed or refused, so a destroyed chain is never silent (SECURITY_AUDIT.md 3.12). Who may run SQL at all is Druid's
+     * allowed or refused, so a destroyed chain is never silent. Who may run SQL at all is Druid's
      * own authorisation to decide; this is the extension's own default-safe posture beneath it.
      */
     private void requireDestructiveAllowed(String operation)

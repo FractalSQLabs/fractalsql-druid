@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Daniel Gardiner d/b/a FractalSQLabs
-"""Limits the MCP server must hold on input it is given (SECURITY_AUDIT.md 3.20, 3.21; 3.19 is in vecform_probe.cpp).
+"""Limits the MCP server must hold on input it is given (the vector-format limit is in vecform_probe.cpp).
 
 usage: mcp_audit_limits.py MCP_BINARY
   3.20  a limit bound that is not a number is refused, not cast (NaN to int64 is undefined behaviour);

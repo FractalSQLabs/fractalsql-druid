@@ -67,6 +67,21 @@ DFA's complement: localizes *where* a series' mean and/or variance shifted, inst
 **Return**: `{"indices":[..]}` — ascending boundary indices, up to `max_points`.
 Sliding two-sample test over adjacent windows of `window` samples; flags a boundary when the mean differs by more than `threshold` pooled-standard-deviation units or the variance ratio exceeds `threshold` squared. Requires at least `2 * window` points.
 
+### `fractal_chunk_text` (REST)
+**Split long text into chunks (pure, no model)**
+
+`POST /fractalsql/chunk` with `{"text": ..., "chunk_size": n, "chunk_overlap": n, "chunk_mode": "paragraph"|"sentence"|"fixed"}` returns `{"chunks": [{"no","start","end","text"}]}`. Druid SQL has no function that can return a list of rows, so the splitter is an endpoint on this host; the chunks it returns are the ones every FractalSQL host returns.
+
+`start` and `end` are character offsets into the original text (`end` is exclusive), and `text` is that slice. Characters are UTF-8 code points, not bytes. `chunk_size` is 1 to 100000 (default 800), `chunk_overlap` is 0 to `chunk_size - 1` (default 0), and at most 100000 chunks are produced. An empty or blank text gives an empty list.
+
+| `chunk_mode` | How the text is cut |
+| --- | --- |
+| `paragraph` (the default) | At paragraph breaks (a run of blanks that contains at least two line feeds). Whole paragraphs are packed into a chunk while it stays within `chunk_size`. |
+| `sentence` | After a run of `.`, `!` or `?` that is followed by whitespace or the end. Whole sentences are packed the same way; a paragraph break also ends a sentence. |
+| `fixed` | Every `chunk_size - chunk_overlap` characters, ignoring the text's structure. |
+
+A paragraph or sentence longer than `chunk_size` is cut like a fixed span, and neighbouring pieces share `chunk_overlap` characters. The size is in characters, not tokens: pick it a little under your embedding model's limit. A Druid datasource is append-only, so the vectorizer here does not keep a chunk datasource in step with its source: ingest the chunks you get back as rows of their own datasource.
+
 ### `fractal_periodogram`
 **Classical Periodogram**
 Power at each positive Fourier frequency. Short series use a direct DFT; longer ones use an FFT (radix-2, or Bluestein's algorithm for other lengths), which agrees with the direct sum to floating-point rounding.
@@ -131,6 +146,8 @@ These two pair into tolerant "have I basically been in this state before" loop d
 
 Utilities over vectors (see [vectorizer-setup.md](vectorizer-setup.md)). They accept a vector as an `ARRAY` or as CSV/JSON TEXT.
 
+Every distance in this section is computed by the one shared double-precision implementation, so the values agree to the last bit with the other SQL-visible distances and with every other FractalSQL host -- see the precision contract in [api-discovery.md](api-discovery.md).
+
 ### `fractal_vector_lp_distance`
 **Generalized $L_p$ Distance**
 
@@ -173,6 +190,13 @@ Finds the best $K$ assets in a large universe without brute-force exponential co
 **`use_obl`**: apply Opposition-Based Learning to each SFS trial candidate. Also evaluate its bound-reflected opposite and keep whichever fits better. Off by default; doubles the fitness-eval cost of the affected diffusion step when enabled.
 **`diffusion_mode`**: `'gaussian'` (default, canonical SFS) or `'levy'`: substitutes a heavy-tailed Lévy-flight step (Mantegna's algorithm) for the Gaussian walk, which can help escape local optima on highly multimodal problems at the cost of occasional very large steps.
 
+### `fractal_optimize_subset`
+**Value-weighted k-subset allocation.** Picks at most `k` items from a scored list and weights them to maximise the total value, with a cap on each item's weight: the general form of `fractal_optimize_portfolio`, for budgets, slots and nodes.
+
+**Signature**: `fractal_optimize_subset(item_values, upper_bounds, k [, prev_weights [, turnover_penalty [, seed]]]) RETURNS TEXT (JSON)`; the vectors are arrays or JSON text. At most 255 items. Every `upper_bounds[i]` must be in `[0, 1]` and the `k` largest must add up to at least 1.
+
+`prev_weights` and `turnover_penalty` steer the search away from reallocating (rebalancing). **Return**: `{"score":..,"weights":[..]}`, `score` being the value-weighted total achieved.
+
 ### `fractal_optimize_portfolio_multimodal`
 **Enterprise tier.** Diverse-candidate variant of `fractal_optimize_portfolio`: runs `n_restarts` independent single-best searches and greedy-selects up to `n_restarts` structurally distinct candidates instead of one.
 
@@ -188,3 +212,17 @@ Finds the best $K$ assets in a large universe without brute-force exponential co
 **Signature**: `fractal_optimize_portfolio_multimodal_pareto(mu, cov, k [, n_restarts [, max_front [, seed [, use_obl [, diffusion_mode]]]]]) RETURNS TEXT (JSON)`
 **Return**: `{"candidates": [{"return":..,"risk":..,"sharpe":..,"weights":[..]}, ...], "n_found":N}`: `sharpe = return/risk` is informational, not the selection criterion.
 **`max_front`**: cap on returned front size, `1 <= max_front <= n_restarts`.
+
+## Named Feature Store
+
+A generic per-item vector store for custom metadata or flagged examples. The vectors live in the `fractalsql_feature_store` datasource, which the first write creates.
+
+### `fractal_store_morphology`
+Upserts a vector against a `doc_id`: it appends a row with an MSQ write, and the newest row of a `doc_id` is its vector.
+**Signature**: `fractal_store_morphology(doc_id, feature_array) RETURNS TEXT ('ok')`
+`feature_array` is a JSON array or a comma-separated list of numbers. A negative `doc_id` is refused. The write waits for its MSQ task, so it takes a few seconds.
+
+### `fractal_mine_topology_negatives`
+Brute-force k-NN over the stored vectors, by true Euclidean distance, nearest first.
+**Signature**: `fractal_mine_topology_negatives(surrogate_vector, k) RETURNS TEXT (JSON)`
+**Return**: `[{"doc_id":..,"distance":..}, ...]`. A stored vector of another dimension is skipped, and a datasource that has no rows yet gives `[]`. `k` must be positive.

@@ -55,6 +55,10 @@ public abstract class FractalExprMacro implements ExprMacroTable.ExprMacro {
     @Inject
     private FractalSqlDaemon daemon;
 
+    /** The index tier, for the IVF index and the indexed search. */
+    @Inject
+    private FractalSqlIndex index;
+
     /** The connection to fractalsqld. */
     protected FractalSqlDaemon daemon()
     {
@@ -114,6 +118,6 @@ public abstract class FractalExprMacro implements ExprMacroTable.ExprMacro {
      */
     protected FractalExpr create(FractalFn.Spec spec, List<Expr> args)
     {
-        return new FractalExpr(this, spec, args, null, config, sessions, core, enterprise, daemon);
+        return new FractalExpr(this, spec, args, null, config, sessions, core, enterprise, daemon, index);
     }
 }

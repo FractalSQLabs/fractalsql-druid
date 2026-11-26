@@ -91,9 +91,13 @@ curl -s -X POST -H 'Content-Type: application/json' \
 FractalSQL's core is a **Stochastic Fractal Search** optimizer. It comes in
 two flavours that solve different problems:
 
-- **Sniper** (`fractal_search`): converge to the single best point in a
+- **Sniper** (`fractal_sfs_converge`): converge to the single best point in a
   continuous space.
 - **Scout** (`fractal_search_explore`): discover the *diverse* structure of
+
+A third entry point, the indexed `fractal_search(datasource, column, query, k)`,
+returns the nearest rows of a datasource through a native IVF index
+(`fractal_index_create`). See [Discovery](api-discovery.md).
   your own data, finding distinct "islands" instead of collapsing to one
   nearest neighbour.
 
@@ -109,8 +113,8 @@ cat > first-search.sql <<'sql'
 --   {"ts": "now", "id": 3, "pt": "[0.2,0.8,0.2]"}
 -- ]};
 
--- Sniper: converge toward the query, one score per row
-SELECT "id", fractal_search("pt", '0.5,0.5,0.5') AS "dist"
+-- Per-row distance (`fractal_search_distance`): converge toward the query, one score per row
+SELECT "id", fractal_search_distance("pt", '0.5,0.5,0.5') AS "dist"
 FROM "demo_points"
 GROUP BY "id"
 ORDER BY "dist" ASC;
@@ -297,12 +301,12 @@ Restart the node. The extension should now appear in the routine catalog:
 ```sql
 SELECT "ROUTINE_NAME", "IS_AGGREGATOR", "SIGNATURES"
 FROM INFORMATION_SCHEMA.ROUTINES
-WHERE "ROUTINE_NAME" = 'fractal_search';
+WHERE "ROUTINE_NAME" = 'fractal_search_distance';
 ```
 
 ```
-[{"ROUTINE_NAME":"fractal_search","IS_AGGREGATOR":"YES",
-  "SIGNATURES":"'fractal_search(<ARRAY>, <CHARACTER>)'"}]
+[{"ROUTINE_NAME":"fractal_search_distance","IS_AGGREGATOR":"YES",
+  "SIGNATURES":"'fractal_search_distance(<ARRAY>, <CHARACTER>)'"}]
 ```
 
 > **If that query returns nothing, the extension did not load.** The usual
