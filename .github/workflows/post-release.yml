@@ -38,7 +38,7 @@ jobs:
           ref: ${{ steps.tag.outputs.tag }}
 
       - name: Generate SPDX SBOM with Syft
-        uses: anchore/sbom-action@d8a2c0130026bf585de5c176ab8f7ce62d75bf04  # v0.20.7
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56  # v0.24.4
         with:
           path: .
           format: spdx-json
