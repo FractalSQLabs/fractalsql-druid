@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install build dependencies
         run: |
           scripts/ci/install-build-deps-el9.sh
@@ -64,7 +64,7 @@ jobs:
         image: ['ubuntu:22.04', 'ubuntu:24.04', 'debian:12', 'debian:13']
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Download
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
@@ -93,7 +93,7 @@ jobs:
         image: ['rockylinux:9', 'almalinux:9']
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Download
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
@@ -126,7 +126,7 @@ jobs:
           - { mode: tarball, image: 'ubuntu:24.04', file: 'fractalsql-druid-linux-amd64.tar.gz' }
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Download
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
@@ -173,7 +173,7 @@ jobs:
           - { arch: amd64, runner: macos-15-intel, java_home: JAVA_HOME_21_X64 }
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install build dependencies
         run: |
           brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3

@@ -38,7 +38,7 @@ jobs:
       JAVA_HOME: /usr/lib/jvm/temurin-21-jdk-${{ matrix.os == 'ubuntu-24.04-arm' && 'arm64' || 'amd64' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -76,7 +76,7 @@ jobs:
         flag: ['--asan', '--ubsan', '--tsan', '--fault', '--fuzz', '--profile', '--coverage']
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -102,7 +102,7 @@ jobs:
       FSQL_DRUID_VERSION: ${{ matrix.druid }}
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -127,7 +127,7 @@ jobs:
           - { runner: macos-15-intel, java_home: JAVA_HOME_21_X64 }
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Select Java 21
         run: |
@@ -153,7 +153,7 @@ jobs:
       FSQL_DRUID_VERSION: ${{ matrix.druid }}
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install build dependencies
         run: |
